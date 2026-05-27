@@ -135,8 +135,10 @@ def _checksum(payload: bytes) -> bytes:
     Compute the 2-byte JBD checksum, stored big-endian.
 
     Checksum = (0x10000 - sum(payload)) & 0xFFFF.
-    *payload* must include the register and length bytes but exclude the
-    start marker (0xDD) and end marker (0x77).
+
+    For outgoing WRITE commands *payload* is ``reg + len + data``.
+    For verifying READ responses use :func:`_verify_checksum` which
+    automatically extracts the correct byte range (``len + data``).
     """
     chk = (0x10000 - sum(payload)) & 0xFFFF
     return bytes([chk >> 8, chk & 0xFF])
@@ -146,7 +148,13 @@ def _verify_checksum(data: bytes) -> bool:
     """
     Verify the checksum of a complete JBD response packet.
 
-    The checksum covers bytes [1 .. N+5] (register through last payload byte).
+    JBD response frame::
+
+        DD  reg  status  len  [payload × len]  chk_hi  chk_lo  77
+
+    The checksum covers ``len + payload`` only (bytes [3..3+len]).
+    The register (byte 1) and status (byte 2) are NOT included.
+
     Returns True if the packet checksum is valid.
     """
     if len(data) < 7:
@@ -155,7 +163,7 @@ def _verify_checksum(data: bytes) -> bool:
     payload_end = 4 + n
     if len(data) < payload_end + 3:
         return False
-    body        = data[1: payload_end]        # reg + status + len + payload
+    body        = data[3:payload_end]          # len byte + payload only
     expected    = _checksum(body)
     actual      = data[payload_end: payload_end + 2]
     return expected == actual
