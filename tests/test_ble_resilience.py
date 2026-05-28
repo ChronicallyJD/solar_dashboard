@@ -201,7 +201,7 @@ class TestVictronScannerScan(unittest.TestCase):
         self.assertEqual(vs._payloads, {})
 
     def test_scan_uses_passive_mode(self):
-        """BleakScanner must be created with scanning_mode='passive'."""
+        """BleakScanner must be created with scanning_mode='passive' on first attempt."""
         vs = VictronScanner([])
         created_kwargs = {}
 
@@ -217,7 +217,106 @@ class TestVictronScannerScan(unittest.TestCase):
             run(vs.scan(0.0))
 
         self.assertEqual(created_kwargs.get("scanning_mode"), "passive",
-                         "VictronScanner must use scanning_mode='passive'")
+                         "VictronScanner must try passive mode first")
+
+    def test_scan_includes_or_patterns(self):
+        """Passive mode must include or_patterns — required by BlueZ."""
+        vs = VictronScanner([])
+        created_kwargs = {}
+
+        def capture_scanner(*a, **kw):
+            created_kwargs.update(kw)
+            m = MagicMock()
+            m.start = AsyncMock()
+            m.stop  = AsyncMock()
+            return m
+
+        with patch.object(scanner_mod, "BleakScanner", side_effect=capture_scanner), \
+             patch("asyncio.sleep", new=AsyncMock()):
+            run(vs.scan(0.0))
+
+        self.assertIn("or_patterns", created_kwargs,
+                      "or_patterns must be passed to BleakScanner for passive mode")
+        or_patterns = created_kwargs["or_patterns"]
+        self.assertIsInstance(or_patterns, list)
+        self.assertGreater(len(or_patterns), 0)
+        # Pattern must reference manufacturer data (AD type 0xFF)
+        ad_types = [p[1] for p in or_patterns]
+        self.assertIn(0xFF, ad_types,
+                      "or_patterns must include AD type 0xFF (manufacturer data)")
+
+    def test_scan_or_patterns_contain_victron_company_id(self):
+        """or_patterns must match on Victron's company ID (0x02E1 LE = E1 02)."""
+        vs = VictronScanner([])
+        created_kwargs = {}
+
+        def capture_scanner(*a, **kw):
+            created_kwargs.update(kw)
+            m = MagicMock()
+            m.start = AsyncMock()
+            m.stop  = AsyncMock()
+            return m
+
+        with patch.object(scanner_mod, "BleakScanner", side_effect=capture_scanner), \
+             patch("asyncio.sleep", new=AsyncMock()):
+            run(vs.scan(0.0))
+
+        or_patterns = created_kwargs.get("or_patterns", [])
+        victron_id_le = bytes([0xE1, 0x02])  # 0x02E1 little-endian
+        matched = any(
+            isinstance(p, tuple) and len(p) >= 3 and victron_id_le in bytes(p[2])
+            for p in or_patterns
+        )
+        self.assertTrue(matched,
+                        "or_patterns must contain Victron company ID E1:02")
+
+    def test_scan_falls_back_to_active_on_passive_error(self):
+        """Any passive mode failure must fall back to active — not just specific errors."""
+        vs = VictronScanner([])
+        call_log = []
+
+        # Test with several different error types to confirm the catch is broad
+        for error_msg in [
+            "passive scanning mode requires bluez or_patterns",
+            "Invalid argument",              # wrong or_patterns format
+            "BleakError: something else",    # any other passive failure
+        ]:
+            call_log.clear()
+
+            def capture_scanner(*a, **kw):
+                mode = kw.get("scanning_mode", "unknown")
+                call_log.append(mode)
+                m = MagicMock()
+                if mode == "passive":
+                    m.start = AsyncMock(side_effect=Exception(error_msg))
+                else:
+                    m.start = AsyncMock()
+                m.stop = AsyncMock()
+                return m
+
+            with patch.object(scanner_mod, "BleakScanner", side_effect=capture_scanner), \
+                 patch("asyncio.sleep", new=AsyncMock()):
+                run(vs.scan(0.0))
+
+            self.assertIn("passive", call_log,
+                          f"Must try passive first (error: {error_msg!r})")
+            self.assertIn("active",  call_log,
+                          f"Must fall back to active on: {error_msg!r}")
+
+    def test_scan_non_passive_error_propagates(self):
+        """Errors unrelated to passive mode must not be swallowed."""
+        vs = VictronScanner([])
+
+        def capture_scanner(*a, **kw):
+            m = MagicMock()
+            m.start = AsyncMock(side_effect=RuntimeError("Bluetooth adapter gone"))
+            m.stop  = AsyncMock()
+            return m
+
+        with patch.object(scanner_mod, "BleakScanner", side_effect=capture_scanner), \
+             patch("asyncio.sleep", new=AsyncMock()):
+            with self.assertRaises(RuntimeError):
+                run(vs.scan(0.0))
 
     def test_scan_stop_called_in_finally_on_success(self):
         """scanner.stop() must be called even on success."""
@@ -298,7 +397,9 @@ class TestPollBmsDirect(unittest.TestCase):
                           ble_name=None, enc_key=None, password=None)
 
         async def fake_read(dev, name, password=None):
-            r = DeviceReading(address=dev.address, name=name,
+            # dev is now a MAC string (not BLEDevice)
+            address = dev if isinstance(dev, str) else dev.address
+            r = DeviceReading(address=address, name=name,
                               device_type="bms", timestamp="t")
             r.voltage_v = 54.0
             return r
@@ -324,7 +425,8 @@ class TestPollBmsDirect(unittest.TestCase):
         async def fail_once(dev, name, password=None):
             nonlocal call_count
             call_count += 1
-            r = DeviceReading(address=dev.address, name=name,
+            address = dev if isinstance(dev, str) else dev.address
+            r = DeviceReading(address=address, name=name,
                               device_type="bms", timestamp="t")
             if call_count == 1:
                 r.error = "timed out"
@@ -344,7 +446,8 @@ class TestPollBmsDirect(unittest.TestCase):
         async def perm_fail(dev, name, password=None):
             nonlocal call_count
             call_count += 1
-            r = DeviceReading(address=dev.address, name=name,
+            address = dev if isinstance(dev, str) else dev.address
+            r = DeviceReading(address=address, name=name,
                               device_type="bms", timestamp="t")
             r.error = "BMS rejected password"
             return r
@@ -504,13 +607,26 @@ class TestArchitectureGuarantees(unittest.TestCase):
         self.assertIn("passive", src,
                       "VictronScanner.scan() must use passive scanning mode")
 
+    def test_or_patterns_in_scanner_source(self):
+        src = inspect.getsource(VictronScanner.scan)
+        self.assertIn("or_patterns", src,
+                      "scan() must pass or_patterns — required by BlueZ passive mode")
+
+    def test_active_fallback_in_scanner_source(self):
+        src = inspect.getsource(VictronScanner.scan)
+        self.assertIn("active", src,
+                      "scan() must fall back to active when passive unavailable")
+
     def test_victron_scanner_stop_in_finally(self):
         src = inspect.getsource(VictronScanner.scan)
         self.assertIn("finally:", src)
         finally_idx = src.find("finally:")
-        stop_idx    = src.find("stop()", finally_idx)
+        # stop is now delegated to _stop_scanner() from the finally block
+        stop_idx = src.find("_stop_scanner()", finally_idx)
+        if stop_idx < 0:
+            stop_idx = src.find("stop()", finally_idx)
         self.assertGreater(stop_idx, 0,
-                           "stop() must be called in the finally block of scan()")
+                           "Scanner must be stopped in the finally block of scan()")
 
     # ── _poll_bms signature — no scanner ─────────────────────────────────────
 

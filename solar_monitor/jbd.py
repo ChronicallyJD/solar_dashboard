@@ -581,19 +581,25 @@ class JBDGattReader:
 # ── Public reader function ────────────────────────────────────────────────────
 
 async def read_jbd_device(
-    device: BLEDevice,
+    device,
     friendly_name: Optional[str] = None,
     password: Optional[str] = None,
 ) -> DeviceReading:
     """
     Connect to a JBD BMS, read basic info, and return a DeviceReading.
 
+    *device* may be a ``BLEDevice`` (from a scan) or a plain MAC address
+    string (e.g. ``"AA:BB:CC:DD:EE:FF"``).  When a MAC string is given,
+    ``BleakClient`` passes it straight to BlueZ which constructs the D-Bus
+    path itself — this avoids the ``KeyError: 'path'`` that occurs when
+    a synthetic ``BLEDevice`` with an empty ``details`` dict is used.
+
     The entire operation (connect + settle + read) is wrapped in a
     PER_DEVICE_TIMEOUT deadline so a stalled device cannot block the
     poll cycle indefinitely.
 
     Args:
-        device:        BLEDevice from the scanner.
+        device:        BLEDevice or MAC address string.
         friendly_name: Dashboard display label; falls back to BLE name or MAC.
         password:      BMS connection password, or None.
 
@@ -601,13 +607,23 @@ async def read_jbd_device(
         DeviceReading with all fields populated on success, or with
         ``error`` set to a human-readable message on failure.
     """
-    ts   = datetime.now().isoformat(timespec="seconds")
-    name = friendly_name or device.name or device.address
-    r    = DeviceReading(address=device.address, name=name,
-                         device_type="bms", timestamp=ts)
+    ts      = datetime.now().isoformat(timespec="seconds")
+    # Normalise to address string and friendly name regardless of input type
+    if isinstance(device, str):
+        address = device
+        name    = friendly_name or address
+    else:
+        address = device.address
+        name    = friendly_name or getattr(device, "name", None) or address
+
+    r = DeviceReading(address=address, name=name, device_type="bms", timestamp=ts)
     try:
         async with asyncio.timeout(PER_DEVICE_TIMEOUT):
-            async with BleakClient(device, timeout=15) as client:
+            # Pass address string directly so BlueZ builds the D-Bus path itself.
+            # This is the safe path when no prior scan has registered the device
+            # with BlueZ — a synthetic BLEDevice with details={} would raise
+            # KeyError('path') inside bleak's BlueZ backend.
+            async with BleakClient(address, timeout=15) as client:
                 raw    = await JBDGattReader(client).read_basic_info(
                     password=password
                 )

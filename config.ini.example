@@ -12,5 +12,5 @@ theme            = business
 # House Bank = AA:BB:CC:DD:EE:FF : 123456
 
 [victron]
-# South Array = 11:22:33:44:55:01 : aabbccddeeff00112233445566778899  type=mppt
-# MultiPlus   = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverter
+# See MANUAL.md Section 8 for setup instructions.
+# MultiPlus = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverter

@@ -75,6 +75,8 @@ _TRANSIENT_ERRORS: tuple[str, ...] = (
     "no response",
     "disconnected",
     "device disconnected",
+    "'path'",           # BlueZ D-Bus path lookup failure (device not in cache)
+    "keyerror",        # same error caught at a higher level
 )
 
 # Error substrings that indicate a permanent failure — stop retrying immediately.
@@ -159,34 +161,104 @@ class VictronScanner:
         """
         Listen for Victron advertisements for *duration* seconds.
 
-        Uses passive scanning and (when MAC addresses are configured)
-        a MAC address filter so only the relevant devices are delivered.
+        Tries passive scanning first (lower radio footprint).  Passive mode
+        on Linux/BlueZ requires ``or_patterns`` telling the kernel which AD
+        types to deliver; different bleak versions expect different formats.
+        We try both formats before falling back to active scanning.
+
+        Active scanning works identically for Victron — their devices
+        broadcast continuously without solicitation, so the adapter receives
+        the same advertisement data regardless of scan mode.
+
         Clears accumulated data from the previous cycle before starting.
         """
         self._adv.clear()
         self._payloads.clear()
 
-        kwargs: dict = {
+        # Victron company ID 0x02E1, little-endian in manufacturer data header.
+        _VICTRON_MFR_BYTES = bytes([
+            VICTRON_MFR_ID & 0xFF,
+            (VICTRON_MFR_ID >> 8) & 0xFF,
+        ])
+
+        # Build passive-mode kwargs.  bleak has used two different formats for
+        # or_patterns depending on version:
+        #   - Tuple format (bleak ≤ 0.20): [(start, ad_type, value_bytes), ...]
+        #   - AdvertisementDataFilter (bleak ≥ 0.21): [AdvertisementDataFilter(...)]
+        # We build both and try them in sequence.
+        _passive_candidates: list[dict] = []
+
+        # Format 1: AdvertisementDataFilter objects (bleak ≥ 0.21)
+        try:
+            from bleak.backends.bluezdbus.advertisement_monitor import (
+                OrPattern as _OrPattern,
+            )
+            _passive_candidates.append({
+                "detection_callback": self._cb,
+                "scanning_mode": "passive",
+                "or_patterns": [_OrPattern(0, 0xFF, _VICTRON_MFR_BYTES)],
+            })
+        except ImportError:
+            pass
+
+        # Format 2: raw tuple (bleak ≤ 0.20)
+        _passive_candidates.append({
             "detection_callback": self._cb,
             "scanning_mode": "passive",
-        }
+            "or_patterns": [(0, 0xFF, _VICTRON_MFR_BYTES)],
+        })
 
-        # Apply MAC filter when we have explicit addresses to watch.
-        # bleak ≥ 0.20 supports service_uuids filter; MAC filter is via
-        # cb_filters kwarg on Linux/BlueZ (bleak ≥ 0.21).
-        # We pass it as a keyword and silently ignore if the version doesn't
-        # support it — the callback already filters by MAC as a fallback.
+        # Format 3: active fallback (always works)
+        _active_kwargs: dict = {
+            "detection_callback": self._cb,
+            "scanning_mode": "active",
+        }
         if self._macs:
             try:
-                kwargs["cb_filters"] = [{"address": m} for m in self._macs]
+                _active_kwargs["cb_filters"] = [{"address": m} for m in self._macs]
             except Exception:
-                pass   # older bleak — callback filter is the safety net
+                pass
 
-        self._scanner = BleakScanner(**kwargs)
+        all_attempts = _passive_candidates + [_active_kwargs]
+
+        last_exc = None
+        for kwargs in all_attempts:
+            mode = kwargs.get("scanning_mode", "active")
+            try:
+                self._scanner = BleakScanner(**kwargs)
+                await self._scanner.start()
+                if mode == "active":
+                    if last_exc is not None:
+                        log.warning(
+                            f"VictronScanner: passive scan unavailable "
+                            f"({type(last_exc).__name__}: {last_exc}) — "
+                            f"using active scanning (data unaffected)"
+                        )
+                    else:
+                        log.debug("VictronScanner: using active scanning")
+                else:
+                    log.debug("VictronScanner: passive scan started")
+                break   # success
+            except Exception as exc:
+                last_exc = exc
+                log.debug(f"VictronScanner: {mode} attempt failed: {exc}")
+                await self._stop_scanner()
+                continue
+        else:
+            # All attempts failed — raise the last error
+            raise RuntimeError(
+                f"VictronScanner: all scan modes failed. "
+                f"Last error: {last_exc}"
+            ) from last_exc
+
         try:
-            await self._scanner.start()
             await asyncio.sleep(duration)
         finally:
+            await self._stop_scanner()
+
+    async def _stop_scanner(self) -> None:
+        """Stop and clear the internal scanner reference."""
+        if self._scanner is not None:
             try:
                 await self._scanner.stop()
             except Exception:
@@ -243,18 +315,11 @@ async def _poll_bms(
                 log.info(f"  [BMS]  {friendly}: retry {attempt}/{BMS_RETRIES - 1} ...")
                 await asyncio.sleep(RETRY_DELAY)
 
-            # Construct a minimal BLEDevice for the connection.
-            # bleak accepts either a BLEDevice or a plain MAC string as the
-            # address argument to BleakClient.  We use a BLEDevice so the
-            # name appears in log messages.
-            from bleak.backends.device import BLEDevice as _BLEDevice
-            try:
-                ble_device = _BLEDevice(dc.mac, friendly or dc.mac,
-                                        details={}, rssi=0)
-            except TypeError:
-                # Older or stubbed bleak — construct with positional args only
-                ble_device = _BLEDevice(dc.mac, friendly or dc.mac)
-            result = await read_jbd_device(ble_device, friendly,
+            # Pass the MAC address string directly.  bleak on Linux/BlueZ
+            # constructs the D-Bus object path from the MAC itself, so no
+            # prior scan is required.  Using a synthetic BLEDevice with
+            # details={} would raise KeyError('path') inside bleak's backend.
+            result = await read_jbd_device(dc.mac, friendly,
                                            password=dc.password)
 
             if result.error is None:
