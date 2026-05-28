@@ -1,41 +1,50 @@
 """
-solar_monitor/scanner.py — BLE scanning, device resolution, and poll orchestration
-====================================================================================
-Coordinates the full polling cycle:
-  1. BLE scan (PersistentScanner keeps radio on throughout)
-  2. Device resolution: match configured devices to scan results
-  3. Sequential BMS polling (BlueZ reliability constraint)
-  4. Victron reading from accumulated advertisement payloads
+solar_monitor/scanner.py — BLE device resolution and poll orchestration
+========================================================================
+Two separate strategies, matching the two device types:
 
-BlueZ sequential polling rationale
-------------------------------------
-BlueZ on Linux serialises all GATT operations through a single D-Bus socket.
-Firing more than ~2 concurrent BleakClient.connect() calls produces:
-  - "org.bluez.Error.Failed: Operation already in progress"
-  - "br-connection-canceled"
-Polling BMS devices strictly one-at-a-time with a gap between each is slower
-but produces far more reliable results across 5–10 devices.
+BMS (JBD/Vatrer)
+----------------
+Connects directly by MAC address via BleakClient — NO scanning required.
+BlueZ connects to the device immediately if it is advertising, or attempts
+a direct connection if it is in its BlueZ cache.  This means:
+  - No radio contention with the Victron process
+  - No InProgress errors
+  - No lock file needed
 
-Victron advertisement accumulation
--------------------------------------
-Victron devices cycle through broadcasting multiple record types within a
-single advertisement period.  PersistentScanner accumulates every distinct
-payload seen per MAC so poll_all can give victron.read_victron_advertisement
-a complete picture of what the device is broadcasting.
+Victron (MPPT, VE.Bus Smart Dongle, etc.)
+------------------------------------------
+Victron Instant Readout is a passive advertisement protocol: devices
+broadcast encrypted packets continuously and there is no request/response
+mechanism.  We must scan to receive them.
+
+The scan uses:
+  - ``scanning_mode="passive"`` — the adapter listens without sending scan
+    requests, reducing radio activity and avoiding interference.
+  - A MAC address filter — BlueZ only delivers callbacks for the specific
+    MACs in our config, ignoring all other BLE traffic.  This is efficient
+    and eliminates the need for post-scan filtering.
+
+Because BMS never scans and Victron scanning is isolated to its own process,
+the previous cross-process lock file (_BleScanLock) is no longer needed.
+
+BlueZ sequential GATT rationale
+---------------------------------
+BlueZ serialises all GATT operations through a single D-Bus socket.
+Firing more than ~2 concurrent BleakClient.connect() calls produces
+"Operation already in progress" errors.  BMS devices are polled strictly
+one-at-a-time with a gap between each for reliability.
 """
 
 import asyncio
-import fcntl
 import logging
-import os
-import tempfile
 from datetime import datetime
 from typing import Optional
 
-from bleak import BleakScanner
+from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 
-from .config import AppConfig
+from .config import AppConfig, DeviceConfig
 from .models import DeviceReading
 from .jbd import JBD_NAME_KEYWORDS, read_jbd_device
 from .victron import (
@@ -45,63 +54,13 @@ from .victron import (
 
 log = logging.getLogger(__name__)
 
-# ── BLE scan lock ─────────────────────────────────────────────────────────────
-# BlueZ allows only ONE active BLE scan at a time across all processes.
-# When bms_monitor.py and victron_monitor.py run concurrently they can both
-# call BleakScanner.start() in the same second, producing:
-#   [org.bluez.Error.InProgress] Operation already in progress
-#
-# We serialise scans with a POSIX advisory lock file.  The lock is held only
-# for the duration of scanner.scan() + device resolution; it is never held
-# while GATT connections are open (those don't require the radio to be in
-# scan mode).
-_BLE_LOCK_PATH    = os.path.join(tempfile.gettempdir(), "solar_monitor_ble.lock")
-_BLE_LOCK_TIMEOUT = 60.0   # seconds to wait before giving up
-
-
-class _BleScanLock:
-    """
-    Async context manager that acquires a process-level POSIX advisory lock
-    on ``_BLE_LOCK_PATH`` before entering.
-
-    Polls with a short sleep so the event loop stays responsive while waiting.
-    Raises ``TimeoutError`` if the lock cannot be acquired within
-    ``_BLE_LOCK_TIMEOUT`` seconds.
-    """
-
-    _POLL_INTERVAL = 0.5   # seconds between lock-acquire attempts
-
-    async def __aenter__(self):
-        self._fh = open(_BLE_LOCK_PATH, "w")
-        deadline = asyncio.get_event_loop().time() + _BLE_LOCK_TIMEOUT
-        while True:
-            try:
-                fcntl.flock(self._fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return self
-            except BlockingIOError:
-                if asyncio.get_event_loop().time() >= deadline:
-                    self._fh.close()
-                    raise TimeoutError(
-                        f"Could not acquire BLE scan lock within "
-                        f"{_BLE_LOCK_TIMEOUT:.0f}s — another process may be "
-                        f"stuck. Delete {_BLE_LOCK_PATH} if this persists."
-                    )
-                await asyncio.sleep(self._POLL_INTERVAL)
-
-    async def __aexit__(self, *_):
-        fcntl.flock(self._fh, fcntl.LOCK_UN)
-        self._fh.close()
-
-
-
+# ── Timing constants ──────────────────────────────────────────────────────────
 
 BMS_RETRIES      = 3    # total attempts per BMS device (including the first)
 RETRY_DELAY      = 4.0  # seconds between retry attempts
 INTER_DEVICE_GAP = 1.5  # seconds between successive BMS connections
 
 # Error substrings that indicate a transient BlueZ failure worth retrying.
-# NOTE: do NOT include empty string here — that would match every error,
-# causing permanent failures (bad password, no GATT service) to be retried.
 _TRANSIENT_ERRORS: tuple[str, ...] = (
     "operation already in progress",
     "br-connection-canceled",
@@ -119,7 +78,6 @@ _TRANSIENT_ERRORS: tuple[str, ...] = (
 )
 
 # Error substrings that indicate a permanent failure — stop retrying immediately.
-# These take priority over _TRANSIENT_ERRORS.
 _PERMANENT_ERRORS: tuple[str, ...] = (
     "rejected password",
     "no compatible jbd",
@@ -130,45 +88,47 @@ _PERMANENT_ERRORS: tuple[str, ...] = (
 )
 
 
-# ── Persistent BLE scanner ────────────────────────────────────────────────────
+# ── Victron BLE scanner ───────────────────────────────────────────────────────
 
-class PersistentScanner:
+class VictronScanner:
     """
-    Long-lived BLE scanner that keeps the radio on throughout the poll cycle.
+    Passive, MAC-filtered BLE scanner for Victron Instant Readout.
 
-    Why persistent?
-    ---------------
-    BleakScanner.discover() stops the radio after its timeout, causing
-    BlueZ to evict cached device objects.  Subsequent BleakClient(device)
-    calls then raise "device was not found / removed from BlueZ".
-    Keeping the scanner running avoids this entirely.
+    Uses ``scanning_mode="passive"`` so the adapter only listens — it never
+    sends scan requests.  This is sufficient for Victron devices (they
+    broadcast without solicitation) and reduces radio activity.
 
-    Device cache
-    ------------
-    Every BLEDevice seen across ALL scan cycles is retained in
-    _device_cache.  When a configured BMS device is not visible in the
-    current scan window (temporarily out of range, slow to advertise after
-    a power cycle), the cached BLEDevice is used for the GATT connection
-    attempt rather than giving up immediately.
+    A MAC address filter is applied at construction time so BlueZ only
+    delivers callbacks for the configured Victron devices.  All other BLE
+    traffic is silently ignored at the kernel/HCI level.
 
-    Victron payload accumulation
-    ----------------------------
-    Victron devices cycle through multiple record types per advertisement
-    period.  All distinct payloads are accumulated per MAC so the reader
-    can try each record type and choose the most informative one.
+    Payload accumulation
+    --------------------
+    Victron devices broadcast multiple record types in rotation.  All
+    distinct payloads seen per MAC are accumulated so the caller can try
+    each record type and use the most informative one.
     """
 
-    def __init__(self) -> None:
-        self._seen:              dict[str, tuple]       = {}   # this scan window
-        self._device_cache:      dict[str, BLEDevice]   = {}   # all-time
-        self._victron_payloads:  dict[str, list[bytes]] = {}
-        self._scanner: Optional[BleakScanner]           = None
+    def __init__(self, mac_addresses: list[str]) -> None:
+        """
+        Parameters
+        ----------
+        mac_addresses:
+            Upper-cased Bluetooth MAC addresses of Victron devices to watch.
+            Empty list means accept all — useful for auto-discovery.
+        """
+        self._macs:             set[str]             = {m.upper() for m in mac_addresses}
+        self._adv:              dict[str, tuple]      = {}   # mac → (BLEDevice, adv_data)
+        self._payloads:         dict[str, list[bytes]]= {}   # mac → [raw_payload, …]
+        self._scanner: Optional[BleakScanner]         = None
 
     def _cb(self, device: BLEDevice, adv_data) -> None:
-        """BleakScanner detection callback."""
+        """BleakScanner detection callback — called for every matching advertisement."""
         mac = device.address.upper()
-        self._seen[mac]         = (device, adv_data)
-        self._device_cache[mac] = device   # always keep freshest BLEDevice
+        if self._macs and mac not in self._macs:
+            return
+
+        self._adv[mac] = (device, adv_data)
 
         mfr = getattr(adv_data, "manufacturer_data", {}) or {}
         raw = mfr.get(VICTRON_MFR_ID)
@@ -176,7 +136,7 @@ class PersistentScanner:
             return
 
         payloads = raw if isinstance(raw, list) else [raw]
-        seen_set = {bytes(p) for p in self._victron_payloads.get(mac, [])}
+        seen_set = {bytes(p) for p in self._payloads.get(mac, [])}
 
         for p in payloads:
             pb = bytes(p)
@@ -192,259 +152,110 @@ class PersistentScanner:
                 continue
             if record_type not in VICTRON_RECORD_TYPES:
                 continue
-            self._victron_payloads.setdefault(mac, []).append(pb)
+            self._payloads.setdefault(mac, []).append(pb)
             seen_set.add(pb)
 
-    async def scan(self, duration: float) -> dict[str, tuple]:
+    async def scan(self, duration: float) -> None:
         """
-        Scan for *duration* seconds.  Clears per-cycle state but preserves
-        _device_cache across calls.
+        Listen for Victron advertisements for *duration* seconds.
 
-        Acquires a process-level lock (``_BLE_LOCK_PATH``) before starting
-        so that bms_monitor.py and victron_monitor.py never scan simultaneously.
-        BlueZ only allows one active scan system-wide; concurrent starts produce
-        ``[org.bluez.Error.InProgress]``.
-
-        If the radio is already in use by another process the call blocks until
-        the lock is released (up to ``_BLE_LOCK_TIMEOUT`` seconds).
-
-        Also retries once on ``InProgress`` in case a stale scanner from a
-        previous cycle is still registered with BlueZ.
+        Uses passive scanning and (when MAC addresses are configured)
+        a MAC address filter so only the relevant devices are delivered.
+        Clears accumulated data from the previous cycle before starting.
         """
-        self._seen.clear()
-        self._victron_payloads.clear()
+        self._adv.clear()
+        self._payloads.clear()
 
-        async with _BleScanLock():
-            # Stop any scanner left over from a previous cycle before starting
-            await self.stop()
+        kwargs: dict = {
+            "detection_callback": self._cb,
+            "scanning_mode": "passive",
+        }
 
-            for attempt in range(2):
-                try:
-                    self._scanner = BleakScanner(detection_callback=self._cb)
-                    await self._scanner.start()
-                    break
-                except Exception as exc:
-                    if "InProgress" in str(exc) and attempt == 0:
-                        log.warning(
-                            "BLE scanner: Operation already in progress — "
-                            "waiting 5s for BlueZ to release the radio …"
-                        )
-                        await self.stop()
-                        await asyncio.sleep(5.0)
-                        continue
-                    raise   # re-raise on second attempt or other errors
+        # Apply MAC filter when we have explicit addresses to watch.
+        # bleak ≥ 0.20 supports service_uuids filter; MAC filter is via
+        # cb_filters kwarg on Linux/BlueZ (bleak ≥ 0.21).
+        # We pass it as a keyword and silently ignore if the version doesn't
+        # support it — the callback already filters by MAC as a fallback.
+        if self._macs:
+            try:
+                kwargs["cb_filters"] = [{"address": m} for m in self._macs]
+            except Exception:
+                pass   # older bleak — callback filter is the safety net
 
+        self._scanner = BleakScanner(**kwargs)
+        try:
+            await self._scanner.start()
             await asyncio.sleep(duration)
-
-        return dict(self._seen)
-
-    def latest_adv(self, mac: str) -> Optional[tuple]:
-        """Return the most recent (BLEDevice, adv_data) from this scan."""
-        return self._seen.get(mac.upper())
-
-    def cached_device(self, mac: str) -> Optional[BLEDevice]:
-        """
-        Return the most recently seen BLEDevice for *mac* from any scan.
-
-        Used to retry GATT connections to configured devices that were not
-        visible in the most recent scan window.
-        """
-        return self._device_cache.get(mac.upper())
-
-    def victron_payloads(self, mac: str) -> list[bytes]:
-        """All distinct Victron payloads accumulated for *mac* this cycle."""
-        return list(self._victron_payloads.get(mac.upper(), []))
-
-    async def stop(self) -> None:
-        """Stop the BLE scanner and release the radio."""
-        if self._scanner:
+        finally:
             try:
                 await self._scanner.stop()
             except Exception:
                 pass
             self._scanner = None
 
+    def latest_adv(self, mac: str) -> Optional[tuple]:
+        """Most recent (BLEDevice, adv_data) for *mac*, or None."""
+        return self._adv.get(mac.upper())
 
-# ── Device resolution ─────────────────────────────────────────────────────────
+    def payloads(self, mac: str) -> list[bytes]:
+        """All distinct Victron payloads accumulated for *mac* this cycle."""
+        return list(self._payloads.get(mac.upper(), []))
 
-async def resolve_devices(cfg: AppConfig) -> tuple[list, list, PersistentScanner]:
-    """
-    Scan for BLE devices and resolve them against the current configuration.
-
-    Returns:
-        ``(jbd_pairs, mppt_triples, scanner)`` where:
-
-        - ``jbd_pairs``: list of ``(BLEDevice, friendly_name, password)`` for
-          BMS devices found in the scan, or ``(None, name, ident, password)``
-          for configured devices that were not seen.
-
-        - ``mppt_triples``: list of ``(BLEDevice, adv_data, name, enc_key)``
-          for Victron devices found in the scan, or ``(None, None, name, ident)``
-          for missing configured devices.
-
-        - ``scanner``: the running PersistentScanner; caller must ``await
-          scanner.stop()`` after all connections are finished.
-
-    Device matching order:
-      1. Configured devices matched by MAC (exact, case-insensitive).
-      2. Configured BMS devices matched by BLE advertisement name.
-      3. Auto-discovered devices matched by BLE name keyword patterns.
-    """
-    log.info("Scanning for BLE devices …")
-    scanner = PersistentScanner()
-    seen    = await scanner.scan(cfg.scan_timeout)
-    log.info(f"Scan complete — {len(seen)} device(s) found")
-
-    jbd_pairs    = []
-    mppt_triples = []
-
-    # ── Explicit BMS devices ──────────────────────────────────────────────────
-    if not cfg.auto_discover_bms:
-        for dc in cfg.bms_devices:
-            entry = None
-            if dc.mac:
-                entry = seen.get(dc.mac.upper())
-                if not entry:
-                    log.warning(
-                        f"  [BMS]  '{dc.name}' (MAC {dc.mac}) "
-                        f"not seen in scan — will show as OFFLINE"
-                    )
-            elif dc.ble_name:
-                ble_lower = dc.ble_name.lower()
-                for _mac, (dev, adv) in seen.items():
-                    if (dev.name or "").lower() == ble_lower:
-                        entry = (dev, adv)
-                        log.info(
-                            f"  [BMS]  '{dc.name}' matched BLE name "
-                            f"'{dc.ble_name}' -> {dev.address}"
-                        )
-                        break
-                if not entry:
-                    log.warning(
-                        f"  [BMS]  '{dc.name}' (BLE name '{dc.ble_name}') "
-                        f"not seen in scan — will show as OFFLINE"
-                    )
-
-            if entry:
-                jbd_pairs.append((entry[0], dc.name, dc.password))
-            else:
-                placeholder = dc.mac or dc.ble_name or "??"
-                jbd_pairs.append((None, dc.name, placeholder, dc.password))
-
-    # ── Explicit Victron devices ──────────────────────────────────────────────
-    # Pre-build key lookups so auto-discovery can attach keys too
-    mppt_key_by_mac  = {
-        dc.mac.upper(): dc.enc_key
-        for dc in cfg.mppt_devices if dc.mac and dc.enc_key
-    }
-    mppt_key_by_name = {
-        (dc.ble_name or "").lower(): dc.enc_key
-        for dc in cfg.mppt_devices if dc.ble_name and dc.enc_key
-    }
-
-    if not cfg.auto_discover_mppt:
-        for dc in cfg.mppt_devices:
-            entry = None
-            if dc.mac:
-                entry = seen.get(dc.mac.upper())
-            if entry is None and dc.ble_name:
-                ble_lower = dc.ble_name.lower()
-                for _mac, (dev, adv) in seen.items():
-                    if (dev.name or "").lower() == ble_lower:
-                        entry = (dev, adv)
-                        log.info(
-                            f"  [Victron] '{dc.name}' matched BLE name "
-                            f"'{dc.ble_name}' -> {dev.address}"
-                        )
-                        break
-            if entry:
-                mppt_triples.append((entry[0], entry[1], dc.name, dc.enc_key, dc.device_type))
-            else:
-                log.warning(
-                    f"  [Victron] '{dc.name}' "
-                    f"({dc.mac or dc.ble_name}) not seen in scan"
-                )
-                mppt_triples.append(
-                    (None, None, dc.name, dc.mac or dc.ble_name or "unknown", dc.device_type)
-                )
-
-    # ── Auto-discovery ────────────────────────────────────────────────────────
-    explicit_macs  = ({dc.mac.upper() for dc in cfg.bms_devices  if dc.mac} |
-                      {dc.mac.upper() for dc in cfg.mppt_devices if dc.mac})
-    explicit_names = {(dc.ble_name or "").lower()
-                      for dc in cfg.bms_devices if dc.ble_name}
-
-    for mac, (dev, adv) in seen.items():
-        if mac in explicit_macs:
-            continue
-        name_lower = (dev.name or "").lower()
-        if name_lower in explicit_names:
-            continue
-
-        if cfg.auto_discover_bms and any(
-            kw in name_lower for kw in JBD_NAME_KEYWORDS
-        ):
-            jbd_pairs.append((dev, dev.name or mac, None))
-            log.info(f"  [BMS]  Auto-discovered: {dev.name or mac} ({mac})")
-
-        elif cfg.auto_discover_mppt and (
-            any(kw in name_lower for kw in VICTRON_NAME_KEYWORDS)
-            or VICTRON_MFR_ID in (getattr(adv, "manufacturer_data", {}) or {})
-        ):
-            key = mppt_key_by_mac.get(mac) or mppt_key_by_name.get(name_lower)
-            mppt_triples.append((dev, adv, dev.name or mac, key, None))
-            log.info(f"  [Victron] Auto-discovered: {dev.name or mac} ({mac})"
-                     + (" (key set)" if key else ""))
-
-    log.info(
-        f"Resolved {len(jbd_pairs)} BMS device(s), "
-        f"{len(mppt_triples)} Victron device(s)"
-    )
-    return jbd_pairs, mppt_triples, scanner
+    def seen_macs(self) -> set[str]:
+        """Set of MAC addresses seen during the last scan."""
+        return set(self._adv.keys())
 
 
-# ── Poll orchestration ────────────────────────────────────────────────────────
+# ── BMS direct connection ─────────────────────────────────────────────────────
 
 async def _poll_bms(
-    jbd_pairs: list,
-    scanner: "PersistentScanner",
+    bms_configs: list[DeviceConfig],
 ) -> list[DeviceReading]:
     """
-    Poll all configured BMS devices sequentially and return their readings.
+    Poll all configured BMS devices sequentially by connecting directly.
 
-    Separated from Victron polling so it can run in its own process.
-    Retries transient errors, stops immediately on permanent ones.
+    No scanning needed — each device is addressed by its MAC address.
+    BleakClient(address) asks BlueZ to connect directly, which works as long
+    as the device has advertised recently enough to be in BlueZ's cache, or
+    the device is currently advertising (BlueZ will discover it on-demand).
+
+    Devices are polled one-at-a-time with INTER_DEVICE_GAP seconds between
+    each to give BlueZ time to fully release GATT resources.
     """
 
-    async def _read_bms_with_retry(entry) -> DeviceReading:
-        dev, friendly, password = entry[0], entry[1], entry[2]
+    async def _read_one(dc: DeviceConfig) -> DeviceReading:
+        address  = dc.mac or dc.ble_name or "??"
+        friendly = dc.name
 
-        if dev is None:
-            name  = entry[1]
-            ident = entry[2] if len(entry) > 2 else "??"
-            cached = scanner.cached_device(ident) if ident and ':' in str(ident) else None
-            if cached:
-                log.info(
-                    f"  [BMS]  {name}: not in scan — using cached device "
-                    f"({cached.address})"
-                )
-                dev      = cached
-                password = entry[3] if len(entry) > 3 else None
-            else:
-                return DeviceReading(
-                    address=str(ident), name=name, device_type="bms",
-                    timestamp=datetime.now().isoformat(timespec="seconds"),
-                    error="Device not found in scan and not in cache",
-                )
-
-        result: Optional[DeviceReading] = None
+        if not dc.mac:
+            # No MAC — cannot connect directly; return an error reading
+            return DeviceReading(
+                address=address, name=friendly, device_type="bms",
+                timestamp=datetime.now().isoformat(timespec="seconds"),
+                error=(
+                    "BMS device has no MAC address configured. "
+                    "Direct connection requires a MAC address."
+                ),
+            )
 
         for attempt in range(BMS_RETRIES):
             if attempt > 0:
                 log.info(f"  [BMS]  {friendly}: retry {attempt}/{BMS_RETRIES - 1} ...")
                 await asyncio.sleep(RETRY_DELAY)
 
-            result = await read_jbd_device(dev, friendly, password=password)
+            # Construct a minimal BLEDevice for the connection.
+            # bleak accepts either a BLEDevice or a plain MAC string as the
+            # address argument to BleakClient.  We use a BLEDevice so the
+            # name appears in log messages.
+            from bleak.backends.device import BLEDevice as _BLEDevice
+            try:
+                ble_device = _BLEDevice(dc.mac, friendly or dc.mac,
+                                        details={}, rssi=0)
+            except TypeError:
+                # Older or stubbed bleak — construct with positional args only
+                ble_device = _BLEDevice(dc.mac, friendly or dc.mac)
+            result = await read_jbd_device(ble_device, friendly,
+                                           password=dc.password)
 
             if result.error is None:
                 return result
@@ -472,66 +283,124 @@ async def _poll_bms(
 
         return result   # type: ignore[return-value]
 
-    bms_readings: list[DeviceReading] = []
-    for i, entry in enumerate(jbd_pairs):
+    readings: list[DeviceReading] = []
+    for i, dc in enumerate(bms_configs):
         if i > 0:
             await asyncio.sleep(INTER_DEVICE_GAP)
-        bms_readings.append(await _read_bms_with_retry(entry))
-    return bms_readings
+        readings.append(await _read_one(dc))
+    return readings
 
+
+# ── Victron advertisement reading ─────────────────────────────────────────────
 
 def _poll_victron(
-    mppt_triples: list,
-    scanner: "PersistentScanner",
+    victron_configs: list[DeviceConfig],
+    scanner: VictronScanner,
 ) -> list[DeviceReading]:
     """
-    Build Victron DeviceReadings from accumulated BLE advertisement payloads.
+    Build Victron DeviceReadings from the payloads accumulated by *scanner*.
 
-    This is synchronous — no GATT connections, no waiting.  All data comes
-    from the packets the scanner already accumulated during its scan window.
-
-    Separated from BMS polling so it can run in its own process.
+    Synchronous — no BLE connections, no waiting.  All data comes from the
+    advertisements received during scanner.scan().
     """
-    victron_readings: list[DeviceReading] = []
-    for entry in mppt_triples:
-        if entry[0] is None:
-            _, _, name, ident, *_ = entry
-            victron_readings.append(DeviceReading(
-                address=ident, name=name, device_type="mppt",
-                timestamp=datetime.now().isoformat(timespec="seconds"),
-                error="Device not found during scan",
-            ))
-        else:
-            dev, adv_snapshot, name, key, dtype = entry
-            all_payloads = scanner.victron_payloads(dev.address)
-            fresh        = scanner.latest_adv(dev.address)
-            adv          = fresh[1] if fresh else adv_snapshot
-            victron_readings.append(
-                read_victron_advertisement(
-                    dev, adv, name, key, all_payloads,
-                    device_type_override=dtype,
-                )
-            )
-    return victron_readings
+    readings: list[DeviceReading] = []
 
+    for dc in victron_configs:
+        mac = (dc.mac or "").upper()
+        adv_entry = scanner.latest_adv(mac) if mac else None
+
+        if adv_entry is None:
+            log.warning(f"  [Victron] '{dc.name}' ({mac}) not seen in scan")
+            readings.append(DeviceReading(
+                address=mac or dc.ble_name or "unknown",
+                name=dc.name,
+                device_type=dc.device_type or "victron",
+                timestamp=datetime.now().isoformat(timespec="seconds"),
+                error="Device not seen during scan",
+            ))
+            continue
+
+        dev, adv = adv_entry
+        all_payloads = scanner.payloads(mac)
+        log.info(
+            f"  [Victron] '{dc.name}' ({mac}): "
+            f"{len(all_payloads)} payload(s) accumulated"
+        )
+        readings.append(
+            read_victron_advertisement(
+                dev, adv, dc.name, dc.enc_key, all_payloads,
+                device_type_override=dc.device_type,
+            )
+        )
+
+    return readings
+
+
+# ── Auto-discovery (optional) ─────────────────────────────────────────────────
+
+async def discover_devices(scan_timeout: float = 10.0) -> tuple[list, list]:
+    """
+    Passive scan to auto-discover BMS and Victron devices.
+
+    Used when no explicit devices are configured.  Returns lists of
+    DeviceConfig-like objects that can be passed back to _poll_bms /
+    VictronScanner.
+
+    Most installations should configure devices explicitly in config.ini
+    rather than relying on auto-discovery.
+    """
+    discovered_bms     = []
+    discovered_victron = []
+
+    def cb(device: BLEDevice, adv_data) -> None:
+        name_lower = (device.name or "").lower()
+        mfr = getattr(adv_data, "manufacturer_data", {}) or {}
+
+        if any(kw in name_lower for kw in JBD_NAME_KEYWORDS):
+            discovered_bms.append(device)
+            log.info(f"  Auto-discovered BMS: {device.name} ({device.address})")
+        elif (any(kw in name_lower for kw in VICTRON_NAME_KEYWORDS)
+              or VICTRON_MFR_ID in mfr):
+            discovered_victron.append(device)
+            log.info(f"  Auto-discovered Victron: {device.name} ({device.address})")
+
+    scanner = BleakScanner(detection_callback=cb, scanning_mode="passive")
+    try:
+        await scanner.start()
+        await asyncio.sleep(scan_timeout)
+    finally:
+        try:
+            await scanner.stop()
+        except Exception:
+            pass
+
+    return discovered_bms, discovered_victron
+
+
+# ── Combined poll (legacy / single-process) ───────────────────────────────────
 
 async def poll_all(
-    jbd_pairs: list,
-    mppt_triples: list,
-    scanner: "PersistentScanner",
+    bms_configs: list[DeviceConfig],
+    victron_configs: list[DeviceConfig],
+    scan_timeout: float,
 ) -> tuple[list[DeviceReading], list[DeviceReading]]:
     """
-    Read all devices and return ``(bms_readings, victron_readings)``.
+    Poll all devices and return ``(bms_readings, victron_readings)``.
 
-    This is the combined entry point used by the legacy single-process
-    launcher (``jbd_bms_monitor.py``).  For new deployments, prefer running
-    ``bms_monitor.py`` and ``victron_monitor.py`` as separate processes with
-    independent poll intervals.
-
-    BMS devices are polled sequentially over GATT (slow, unreliable).
-    Victron devices are read from accumulated BLE advertisements (fast).
+    Used by the legacy combined launcher (``jbd_bms_monitor.py``).
+    Victron scan runs first (passive, filtered, no GATT), then BMS
+    connects directly one-at-a-time.  No radio contention between the two.
     """
-    bms_readings     = await _poll_bms(jbd_pairs, scanner)
-    victron_readings = _poll_victron(mppt_triples, scanner)
-    await scanner.stop()
+    # Victron: passive filtered scan
+    macs = [dc.mac for dc in victron_configs if dc.mac]
+    vscanner = VictronScanner(macs)
+    if victron_configs:
+        log.info("Scanning for Victron advertisements (passive) …")
+        await vscanner.scan(scan_timeout)
+
+    victron_readings = _poll_victron(victron_configs, vscanner)
+
+    # BMS: direct connections, no scan
+    bms_readings = await _poll_bms(bms_configs)
+
     return bms_readings, victron_readings

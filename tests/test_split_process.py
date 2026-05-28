@@ -703,38 +703,41 @@ class TestPollFunctionsImportable(unittest.TestCase):
 
 class TestPollVictronMocked(unittest.TestCase):
     """
-    _poll_victron is synchronous and just reads from a mocked scanner,
+    _poll_victron is synchronous and just reads from a VictronScanner,
     so we can test it without any BLE hardware.
     """
 
     def _make_scanner(self):
-        scanner = MagicMock()
-        scanner.victron_payloads.return_value = []
-        scanner.latest_adv.return_value = None
-        return scanner
+        from solar_monitor.scanner import VictronScanner
+        vs = VictronScanner([])
+        return vs
 
     def test_missing_device_returns_error_reading(self):
-        from solar_monitor.scanner import _poll_victron
-        # entry[0] = None means device not seen in scan
-        entry = (None, "scanner_obj", "Multiplus-Ii", "E6:2E:31:75:9A:1A", None)
-        scanner = self._make_scanner()
-        results = _poll_victron([entry], scanner)
+        from solar_monitor.scanner import _poll_victron, VictronScanner
+        from solar_monitor.config import DeviceConfig
+        dc = DeviceConfig(name="Multiplus-Ii", mac="E6:2E:31:75:9A:1A",
+                          ble_name=None, enc_key=None, password=None)
+        scanner = VictronScanner(["E6:2E:31:75:9A:1A"])
+        # Scanner has no data — device was not seen
+        results = _poll_victron([dc], scanner)
         self.assertEqual(len(results), 1)
         r = results[0]
         self.assertIsNotNone(r.error)
-        self.assertIn("not found", r.error.lower())
+        self.assertIn("not seen", r.error.lower())
 
     def test_empty_triples_returns_empty(self):
-        from solar_monitor.scanner import _poll_victron
-        scanner = self._make_scanner()
+        from solar_monitor.scanner import _poll_victron, VictronScanner
+        scanner = VictronScanner([])
         results = _poll_victron([], scanner)
         self.assertEqual(results, [])
 
     def test_returns_list_of_device_readings(self):
-        from solar_monitor.scanner import _poll_victron
-        entry = (None, "scanner_obj", "Test", "AA:BB:CC:DD:EE:FF", None)
-        scanner = self._make_scanner()
-        results = _poll_victron([entry], scanner)
+        from solar_monitor.scanner import _poll_victron, VictronScanner
+        from solar_monitor.config import DeviceConfig
+        dc = DeviceConfig(name="Test", mac="AA:BB:CC:DD:EE:FF",
+                          ble_name=None, enc_key=None, password=None)
+        scanner = VictronScanner(["AA:BB:CC:DD:EE:FF"])
+        results = _poll_victron([dc], scanner)
         self.assertIsInstance(results, list)
         for r in results:
             self.assertIsInstance(r, DeviceReading)
