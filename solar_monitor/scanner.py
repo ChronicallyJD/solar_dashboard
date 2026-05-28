@@ -25,7 +25,10 @@ a complete picture of what the device is broadcasting.
 """
 
 import asyncio
+import fcntl
 import logging
+import os
+import tempfile
 from datetime import datetime
 from typing import Optional
 
@@ -42,7 +45,55 @@ from .victron import (
 
 log = logging.getLogger(__name__)
 
-# ── Retry / timing constants ──────────────────────────────────────────────────
+# ── BLE scan lock ─────────────────────────────────────────────────────────────
+# BlueZ allows only ONE active BLE scan at a time across all processes.
+# When bms_monitor.py and victron_monitor.py run concurrently they can both
+# call BleakScanner.start() in the same second, producing:
+#   [org.bluez.Error.InProgress] Operation already in progress
+#
+# We serialise scans with a POSIX advisory lock file.  The lock is held only
+# for the duration of scanner.scan() + device resolution; it is never held
+# while GATT connections are open (those don't require the radio to be in
+# scan mode).
+_BLE_LOCK_PATH    = os.path.join(tempfile.gettempdir(), "solar_monitor_ble.lock")
+_BLE_LOCK_TIMEOUT = 60.0   # seconds to wait before giving up
+
+
+class _BleScanLock:
+    """
+    Async context manager that acquires a process-level POSIX advisory lock
+    on ``_BLE_LOCK_PATH`` before entering.
+
+    Polls with a short sleep so the event loop stays responsive while waiting.
+    Raises ``TimeoutError`` if the lock cannot be acquired within
+    ``_BLE_LOCK_TIMEOUT`` seconds.
+    """
+
+    _POLL_INTERVAL = 0.5   # seconds between lock-acquire attempts
+
+    async def __aenter__(self):
+        self._fh = open(_BLE_LOCK_PATH, "w")
+        deadline = asyncio.get_event_loop().time() + _BLE_LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(self._fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if asyncio.get_event_loop().time() >= deadline:
+                    self._fh.close()
+                    raise TimeoutError(
+                        f"Could not acquire BLE scan lock within "
+                        f"{_BLE_LOCK_TIMEOUT:.0f}s — another process may be "
+                        f"stuck. Delete {_BLE_LOCK_PATH} if this persists."
+                    )
+                await asyncio.sleep(self._POLL_INTERVAL)
+
+    async def __aexit__(self, *_):
+        fcntl.flock(self._fh, fcntl.LOCK_UN)
+        self._fh.close()
+
+
+
 
 BMS_RETRIES      = 3    # total attempts per BMS device (including the first)
 RETRY_DELAY      = 4.0  # seconds between retry attempts
@@ -148,12 +199,43 @@ class PersistentScanner:
         """
         Scan for *duration* seconds.  Clears per-cycle state but preserves
         _device_cache across calls.
+
+        Acquires a process-level lock (``_BLE_LOCK_PATH``) before starting
+        so that bms_monitor.py and victron_monitor.py never scan simultaneously.
+        BlueZ only allows one active scan system-wide; concurrent starts produce
+        ``[org.bluez.Error.InProgress]``.
+
+        If the radio is already in use by another process the call blocks until
+        the lock is released (up to ``_BLE_LOCK_TIMEOUT`` seconds).
+
+        Also retries once on ``InProgress`` in case a stale scanner from a
+        previous cycle is still registered with BlueZ.
         """
         self._seen.clear()
         self._victron_payloads.clear()
-        self._scanner = BleakScanner(detection_callback=self._cb)
-        await self._scanner.start()
-        await asyncio.sleep(duration)
+
+        async with _BleScanLock():
+            # Stop any scanner left over from a previous cycle before starting
+            await self.stop()
+
+            for attempt in range(2):
+                try:
+                    self._scanner = BleakScanner(detection_callback=self._cb)
+                    await self._scanner.start()
+                    break
+                except Exception as exc:
+                    if "InProgress" in str(exc) and attempt == 0:
+                        log.warning(
+                            "BLE scanner: Operation already in progress — "
+                            "waiting 5s for BlueZ to release the radio …"
+                        )
+                        await self.stop()
+                        await asyncio.sleep(5.0)
+                        continue
+                    raise   # re-raise on second attempt or other errors
+
+            await asyncio.sleep(duration)
+
         return dict(self._seen)
 
     def latest_adv(self, mac: str) -> Optional[tuple]:
@@ -172,19 +254,6 @@ class PersistentScanner:
     def victron_payloads(self, mac: str) -> list[bytes]:
         """All distinct Victron payloads accumulated for *mac* this cycle."""
         return list(self._victron_payloads.get(mac.upper(), []))
-
-    async def stop(self) -> None:
-        """Stop the scanner and release the radio."""
-        if self._scanner:
-            try:
-                await self._scanner.stop()
-            except Exception:
-                pass
-            self._scanner = None
-
-    def snapshot(self) -> dict[str, tuple]:
-        """Point-in-time copy of devices seen this cycle."""
-        return dict(self._seen)
 
     async def stop(self) -> None:
         """Stop the BLE scanner and release the radio."""
@@ -336,55 +405,21 @@ async def resolve_devices(cfg: AppConfig) -> tuple[list, list, PersistentScanner
 
 # ── Poll orchestration ────────────────────────────────────────────────────────
 
-async def poll_all(
+async def _poll_bms(
     jbd_pairs: list,
-    mppt_triples: list,
-    scanner: PersistentScanner,
-) -> tuple[list[DeviceReading], list[DeviceReading]]:
+    scanner: "PersistentScanner",
+) -> list[DeviceReading]:
     """
-    Read all devices and return ``(bms_readings, mppt_readings)``.
+    Poll all configured BMS devices sequentially and return their readings.
 
-    BMS polling strategy
-    --------------------
-    BMS devices are polled **strictly sequentially** with a 1-second gap
-    between each one.  Concurrent GATT connections on Linux/BlueZ are
-    unreliable beyond 2 devices; sequential polling with retries gives far
-    better success rates.
-
-    Each device is attempted up to ``BMS_RETRIES`` times.  Only errors
-    matching ``_TRANSIENT_ERRORS`` are retried; permanent errors (bad
-    password, unsupported GATT service) stop immediately.
-
-    Victron reading strategy
-    ------------------------
-    No GATT connection is needed for Victron devices.  All data comes from
-    the BLE advertisements accumulated by the scanner.  Victron devices are
-    read after all BMS connections complete (so the scanner is still running
-    and delivering fresh nonces at the time of reading).
-
-    The scanner is stopped after all Victron readings are complete.
+    Separated from Victron polling so it can run in its own process.
+    Retries transient errors, stops immediately on permanent ones.
     """
 
     async def _read_bms_with_retry(entry) -> DeviceReading:
-        """
-        Attempt to read a BMS device, retrying on transient errors.
-
-        Retry rules:
-        - Permanent errors (bad password, no GATT service) stop immediately.
-        - Transient errors (timeout, connection canceled, disconnected) are
-          retried up to BMS_RETRIES - 1 additional times.
-        - Unknown errors (not in either list) are treated as transient to
-          maximise recovery, but logged at WARNING level.
-        - If the device was not in the scan window, the all-time device
-          cache is consulted.  The cached BLEDevice may still be reachable
-          even if it missed the scan (e.g. slow to advertise after power-on).
-        """
         dev, friendly, password = entry[0], entry[1], entry[2]
 
-        # If not seen in this scan, try the all-time cache
         if dev is None:
-            cached = scanner.cached_device(entry[1]) if hasattr(entry[1], '__len__') else None
-            # entry format for missing device: (None, name, ident, password)
             name  = entry[1]
             ident = entry[2] if len(entry) > 2 else "??"
             cached = scanner.cached_device(ident) if ident and ':' in str(ident) else None
@@ -406,19 +441,16 @@ async def poll_all(
 
         for attempt in range(BMS_RETRIES):
             if attempt > 0:
-                log.info(
-                    f"  [BMS]  {friendly}: retry {attempt}/{BMS_RETRIES - 1} ..."
-                )
+                log.info(f"  [BMS]  {friendly}: retry {attempt}/{BMS_RETRIES - 1} ...")
                 await asyncio.sleep(RETRY_DELAY)
 
             result = await read_jbd_device(dev, friendly, password=password)
 
             if result.error is None:
-                return result   # success
+                return result
 
             err_lower = (result.error or "").lower()
 
-            # Permanent errors — stop immediately, do not retry
             if any(p in err_lower for p in _PERMANENT_ERRORS):
                 log.warning(
                     f"  [BMS]  {friendly}: permanent error, "
@@ -426,7 +458,6 @@ async def poll_all(
                 )
                 break
 
-            # Transient errors — retry after delay
             if any(t in err_lower for t in _TRANSIENT_ERRORS):
                 log.debug(
                     f"  [BMS]  {friendly}: transient error on attempt "
@@ -434,7 +465,6 @@ async def poll_all(
                 )
                 continue
 
-            # Unknown error — treat as transient but warn
             log.warning(
                 f"  [BMS]  {friendly}: unclassified error on attempt "
                 f"{attempt + 1}, will retry: {result.error}"
@@ -442,21 +472,31 @@ async def poll_all(
 
         return result   # type: ignore[return-value]
 
-    # Sequential BMS polling with gap between each device.
-    # INTER_DEVICE_GAP gives BlueZ time to fully release the previous
-    # connection before the next one starts.
     bms_readings: list[DeviceReading] = []
     for i, entry in enumerate(jbd_pairs):
         if i > 0:
             await asyncio.sleep(INTER_DEVICE_GAP)
         bms_readings.append(await _read_bms_with_retry(entry))
+    return bms_readings
 
-    # Victron reading (scanner still running — fresh nonces available)
-    mppt_readings: list[DeviceReading] = []
+
+def _poll_victron(
+    mppt_triples: list,
+    scanner: "PersistentScanner",
+) -> list[DeviceReading]:
+    """
+    Build Victron DeviceReadings from accumulated BLE advertisement payloads.
+
+    This is synchronous — no GATT connections, no waiting.  All data comes
+    from the packets the scanner already accumulated during its scan window.
+
+    Separated from BMS polling so it can run in its own process.
+    """
+    victron_readings: list[DeviceReading] = []
     for entry in mppt_triples:
         if entry[0] is None:
             _, _, name, ident, *_ = entry
-            mppt_readings.append(DeviceReading(
+            victron_readings.append(DeviceReading(
                 address=ident, name=name, device_type="mppt",
                 timestamp=datetime.now().isoformat(timespec="seconds"),
                 error="Device not found during scan",
@@ -466,14 +506,32 @@ async def poll_all(
             all_payloads = scanner.victron_payloads(dev.address)
             fresh        = scanner.latest_adv(dev.address)
             adv          = fresh[1] if fresh else adv_snapshot
-            mppt_readings.append(
+            victron_readings.append(
                 read_victron_advertisement(
                     dev, adv, name, key, all_payloads,
                     device_type_override=dtype,
                 )
             )
+    return victron_readings
 
-    # All BLE work complete — release the radio
+
+async def poll_all(
+    jbd_pairs: list,
+    mppt_triples: list,
+    scanner: "PersistentScanner",
+) -> tuple[list[DeviceReading], list[DeviceReading]]:
+    """
+    Read all devices and return ``(bms_readings, victron_readings)``.
+
+    This is the combined entry point used by the legacy single-process
+    launcher (``jbd_bms_monitor.py``).  For new deployments, prefer running
+    ``bms_monitor.py`` and ``victron_monitor.py`` as separate processes with
+    independent poll intervals.
+
+    BMS devices are polled sequentially over GATT (slow, unreliable).
+    Victron devices are read from accumulated BLE advertisements (fast).
+    """
+    bms_readings     = await _poll_bms(jbd_pairs, scanner)
+    victron_readings = _poll_victron(mppt_triples, scanner)
     await scanner.stop()
-
-    return bms_readings, mppt_readings
+    return bms_readings, victron_readings

@@ -18,7 +18,8 @@ from .config import (
     DEFAULT_INI_PATH, load_config, apply_cli_overrides, write_example_ini,
 )
 from .dashboard import build_html
-from .scanner import resolve_devices, poll_all
+from .scanner import resolve_devices, poll_all, _poll_bms, _poll_victron
+from .state import load_state, save_section
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +111,8 @@ async def main() -> None:
 
     log.info(
         f"Solar Monitor starting -- output: {output_path}  "
-        f"interval: {cfg.interval}s  theme: {cfg.theme}"
+        f"interval: {cfg.interval}s  theme: {cfg.theme}  "
+        f"(combined mode — use bms_monitor.py + victron_monitor.py for split mode)"
     )
 
     # ── Main polling loop ─────────────────────────────────────────────────────
@@ -125,6 +127,13 @@ async def main() -> None:
         except Exception as exc:
             log.error(f"Poll cycle failed: {exc}", exc_info=True)
             bms_readings, mppt_readings = [], []
+
+        # Write shared state so split-mode processes can pick up readings
+        try:
+            save_section(cfg.state_file, "bms", bms_readings)
+            save_section(cfg.state_file, "victron", mppt_readings)
+        except Exception as exc:
+            log.warning(f"Could not write state file: {exc}")
 
         # Update rolling history ──────────────────────────────────────────────
         for r in bms_readings + mppt_readings:

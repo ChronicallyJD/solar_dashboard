@@ -130,15 +130,18 @@ class DeviceConfig:
 @dataclass
 class AppConfig:
     """Runtime configuration assembled from INI file + CLI overrides."""
-    output:       str   = "dashboard.html"
-    interval:     float = 30.0
-    max_history:  int   = 60
-    scan_timeout: float = 10.0
-    log_level:    str   = "INFO"
-    theme:        str   = "dark"         # "dark" | "light" | "business"
-    bms_devices:  list  = field(default_factory=list)   # list[DeviceConfig]
-    mppt_devices: list  = field(default_factory=list)   # list[DeviceConfig]
-    once:         bool  = False
+    output:           str   = "dashboard.html"
+    state_file:       str   = "solar_state.json"  # shared inter-process state
+    interval:         float = 30.0   # legacy combined interval
+    bms_interval:     float = 120.0  # BMS poll interval (GATT, slow)
+    victron_interval: float = 30.0   # Victron poll interval (BLE adv, fast)
+    max_history:      int   = 60
+    scan_timeout:     float = 10.0
+    log_level:        str   = "INFO"
+    theme:            str   = "dark"         # "dark" | "light" | "business"
+    bms_devices:      list  = field(default_factory=list)   # list[DeviceConfig]
+    mppt_devices:     list  = field(default_factory=list)   # list[DeviceConfig]
+    once:             bool  = False
     auto_discover_bms:  bool = True
     auto_discover_mppt: bool = True
 
@@ -264,12 +267,15 @@ def load_config(ini_path: Optional[str]) -> AppConfig:
 
     # [general] ----------------------------------------------------------------
     g = parser["general"] if "general" in parser else {}
-    cfg.output       = g.get("output",       cfg.output)
-    cfg.interval     = float(g.get("interval",     cfg.interval))
-    cfg.max_history  = int(  g.get("max_history",  cfg.max_history))
-    cfg.scan_timeout = float(g.get("scan_timeout", cfg.scan_timeout))
-    cfg.log_level    = g.get("log_level", cfg.log_level).upper()
-    cfg.theme        = g.get("theme",     cfg.theme).lower()
+    cfg.output           = g.get("output",           cfg.output)
+    cfg.state_file       = g.get("state_file",       cfg.state_file)
+    cfg.interval         = float(g.get("interval",         cfg.interval))
+    cfg.bms_interval     = float(g.get("bms_interval",     cfg.bms_interval))
+    cfg.victron_interval = float(g.get("victron_interval", cfg.victron_interval))
+    cfg.max_history      = int(  g.get("max_history",      cfg.max_history))
+    cfg.scan_timeout     = float(g.get("scan_timeout",     cfg.scan_timeout))
+    cfg.log_level        = g.get("log_level", cfg.log_level).upper()
+    cfg.theme            = g.get("theme",     cfg.theme).lower()
 
     # [bms] --------------------------------------------------------------------
     if "bms" in parser and parser["bms"]:
@@ -312,20 +318,24 @@ def apply_cli_overrides(cfg: AppConfig, args: argparse.Namespace) -> AppConfig:
     """
     Merge parsed CLI arguments on top of an existing AppConfig.
 
-    CLI arguments that were not supplied (None / False) are ignored, so they
-    do not clobber INI values.  --bms and --mppt replace the entire
-    corresponding device list when present.
+    Uses ``getattr(args, key, None)`` throughout so this function works with
+    any argparse Namespace — the split-process launchers (bms_monitor.py,
+    victron_monitor.py) define a subset of flags and must not crash when the
+    combined-launcher flags (--bms, --mppt) are absent.
+
+    CLI arguments that were not supplied (None / False) are ignored and do
+    not clobber INI values.
     """
-    if args.output:
+    if getattr(args, "output", None):
         cfg.output = args.output
-    if args.interval is not None:
+    if getattr(args, "interval", None) is not None:
         cfg.interval = args.interval
-    if args.scan_timeout is not None:
+    if getattr(args, "scan_timeout", None) is not None:
         cfg.scan_timeout = args.scan_timeout
-    if args.once:
+    if getattr(args, "once", False):
         cfg.once = True
 
-    if args.bms:
+    if getattr(args, "bms", None):
         cfg.auto_discover_bms = False
         cfg.bms_devices = [
             DeviceConfig(name=normalise_mac(m), mac=normalise_mac(m),
@@ -333,7 +343,7 @@ def apply_cli_overrides(cfg: AppConfig, args: argparse.Namespace) -> AppConfig:
             for m in args.bms
         ]
 
-    if args.mppt:
+    if getattr(args, "mppt", None):
         cfg.auto_discover_mppt = False
         cfg.mppt_devices = []
         for entry in args.mppt:
