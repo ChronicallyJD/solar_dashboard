@@ -252,23 +252,91 @@ def _parse_basic_info(data: bytes) -> dict:
             f"Payload too short ({len(payload)}B, need ≥23)  raw={data.hex()}"
         )
 
-    voltage_v  = struct.unpack_from(">H", payload, 0)[0] * 10 / 1000.0
-    current_a  = struct.unpack_from(">h", payload, 2)[0] * 10 / 1000.0
-    soc        = payload[19]
-    cell_count = payload[21]
-    ntc_count  = min(payload[22], (len(payload) - 23) // 2)  # guard overflow
+    voltage_v   = struct.unpack_from(">H", payload, 0)[0] * 10 / 1000.0
+    current_a   = struct.unpack_from(">h", payload, 2)[0] * 10 / 1000.0
+    remain_ah   = struct.unpack_from(">H", payload, 4)[0] * 10 / 1000.0
+    nominal_ah  = struct.unpack_from(">H", payload, 6)[0] * 10 / 1000.0
+    cycles      = struct.unpack_from(">H", payload, 8)[0]
+    prod_raw    = struct.unpack_from(">H", payload, 10)[0]
+    bal_lo      = struct.unpack_from(">H", payload, 12)[0]
+    bal_hi      = struct.unpack_from(">H", payload, 14)[0]
+    protection  = struct.unpack_from(">H", payload, 16)[0]
+    sw_ver      = payload[18]
+    soc         = payload[19]
+    fet_bits    = payload[20]
+    cell_count  = payload[21]
+    ntc_count   = min(payload[22], (len(payload) - 23) // 2)  # guard overflow
+
+    # Production date: bits [15:9] = year-2000, [8:5] = month, [4:0] = day
+    prod_year  = 2000 + ((prod_raw >> 9) & 0x7F)
+    prod_month = (prod_raw >> 5) & 0x0F
+    prod_day   = prod_raw & 0x1F
+    prod_date  = f"{prod_year}-{prod_month:02d}-{prod_day:02d}"
+
+    # Per-cell balance flags: 32-bit field (bal_hi << 16 | bal_lo), LSB = cell 1
+    bal_bits   = (bal_hi << 16) | bal_lo
+    balance    = [(bal_bits >> i) & 1 for i in range(cell_count)]
+
+    # Protection status bitmask → human-readable fault list
+    _FAULTS = {
+        0:  "Cell overvoltage",
+        1:  "Cell undervoltage",
+        2:  "Pack overvoltage",
+        3:  "Pack undervoltage",
+        4:  "Charge overtemp",
+        5:  "Charge undertemp",
+        6:  "Discharge overtemp",
+        7:  "Discharge undertemp",
+        8:  "Charge overcurrent",
+        9:  "Discharge overcurrent",
+        10: "Short circuit",
+        11: "IC error",
+        12: "MOS lock",
+    }
+    faults = [name for bit, name in _FAULTS.items() if protection & (1 << bit)]
 
     temps_c = [
         round((struct.unpack_from(">H", payload, 23 + i * 2)[0] - 2731) / 10.0, 1)
         for i in range(ntc_count)
     ]
+
+    # Derived fields
+    power_w      = round(voltage_v * current_a, 2)
+    remain_wh    = round(remain_ah * voltage_v, 1)
+    nominal_wh   = round(nominal_ah * voltage_v, 1)
+
+    # Time-to-empty / time-to-full (hours), only meaningful when current is non-zero
+    tte_h = round(remain_ah / abs(current_a), 2) if current_a < -0.1 else None
+    ttf_h = round((nominal_ah - remain_ah) / current_a, 2) \
+            if current_a > 0.1 else None
+
     return {
-        "voltage_v":    round(voltage_v, 3),
-        "current_a":    round(current_a, 3),
-        "power_w":      round(voltage_v * current_a, 2),
-        "capacity_pct": soc,
-        "cell_count":   cell_count,
-        "temp_c":       temps_c,
+        # Core
+        "voltage_v":        round(voltage_v, 3),
+        "current_a":        round(current_a, 3),
+        "power_w":          power_w,
+        "capacity_pct":     soc,
+        # Capacity
+        "remain_ah":        round(remain_ah, 2),
+        "nominal_ah":       round(nominal_ah, 2),
+        "remain_wh":        remain_wh,
+        "nominal_wh":       nominal_wh,
+        # Runtime estimates
+        "time_to_empty_h":  tte_h,
+        "time_to_full_h":   ttf_h,
+        # Pack info
+        "cycle_count":      cycles,
+        "cell_count":       cell_count,
+        "sw_version":       f"{sw_ver >> 4}.{sw_ver & 0xF}",
+        "production_date":  prod_date,
+        # Status
+        "balance_cells":    balance,        # list[int], 1 = balancing
+        "protection_bits":  protection,     # raw uint16
+        "faults":           faults,         # list[str]
+        "charge_fet":       bool(fet_bits & 0x01),
+        "discharge_fet":    bool(fet_bits & 0x02),
+        # Temperatures
+        "temp_c":           temps_c,
     }
 
 
@@ -548,7 +616,10 @@ async def read_jbd_device(
                     setattr(r, k, v)
         log.info(
             f"  [BMS]  {name}: {r.voltage_v}V  {r.current_a}A  "
-            f"{r.power_w}W  SoC={r.capacity_pct}%"
+            f"{r.power_w}W  SoC={r.capacity_pct}%  "
+            f"{r.remain_wh}Wh  "
+            f"{'TTE=' + str(r.time_to_empty_h) + 'h' if r.time_to_empty_h else ''}"
+            f"{'TTF=' + str(r.time_to_full_h) + 'h' if r.time_to_full_h else ''}"
         )
     except asyncio.TimeoutError:
         r.error = (

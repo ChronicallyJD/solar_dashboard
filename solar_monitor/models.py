@@ -37,12 +37,26 @@ class DeviceReading:
     current_a:       Optional[float] = None   # DC current (+ = charge, - = discharge)
     power_w:         Optional[float] = None   # DC power; for inverters = AC apparent power
 
-    # BMS / Battery Monitor fields
+    # BMS / Battery Monitor fields — from JBD register 0x03
     capacity_pct:    Optional[int]   = None   # State of charge 0-100 %
     cell_count:      Optional[int]   = None   # Number of cells in series
-    temp_c:          list            = field(default_factory=list)  # NTC sensor readings
-    ttg_minutes:     Optional[int]   = None   # Time to go (minutes)
+    temp_c:          list            = field(default_factory=list)  # NTC readings (°C)
+    ttg_minutes:     Optional[int]   = None   # Time to go (minutes, from Victron BMV)
     alarm_reason:    Optional[int]   = None   # Alarm bitmask
+    remain_ah:       Optional[float] = None   # Remaining capacity (Ah)
+    nominal_ah:      Optional[float] = None   # Design capacity (Ah)
+    remain_wh:       Optional[float] = None   # Remaining energy (Wh)
+    nominal_wh:      Optional[float] = None   # Design energy (Wh)
+    time_to_empty_h: Optional[float] = None   # Hours until empty at current draw
+    time_to_full_h:  Optional[float] = None   # Hours until full at current charge rate
+    cycle_count:     Optional[int]   = None   # Full charge cycles completed
+    sw_version:      Optional[str]   = None   # BMS firmware version string
+    production_date: Optional[str]   = None   # Pack production date (YYYY-MM-DD)
+    balance_cells:   Optional[list]  = None   # Per-cell balance flags (1 = actively balancing)
+    protection_bits: Optional[int]   = None   # Raw 16-bit protection status register
+    faults:          Optional[list]  = None   # Active fault names decoded from protection_bits
+    charge_fet:      Optional[bool]  = None   # Charge MOSFET enabled
+    discharge_fet:   Optional[bool]  = None   # Discharge MOSFET enabled
 
     # Solar Charger (MPPT) fields
     pv_power_w:      Optional[float] = None   # PV panel input power

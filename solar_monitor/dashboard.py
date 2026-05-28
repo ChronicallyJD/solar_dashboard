@@ -438,16 +438,76 @@ def render_bms_card(r: DeviceReading) -> str:
         body = f'<div class="error-msg">⚠ {r.error}</div>'
     else:
         soc = r.capacity_pct or 0
-        temps = (f'<div class="temps">NTC: {"  ".join(f"{t} °C" for t in r.temp_c)}</div>'
-                 if r.temp_c else "")
-        body = (f'<div class="metrics">'
-                f'<div class="metric"><div class="metric-val v">{_fmt(r.voltage_v,3)}</div><div class="metric-lbl">Volts</div></div>'
-                f'<div class="metric"><div class="metric-val a">{_fmt(r.current_a,3)}</div><div class="metric-lbl">Amps</div></div>'
-                f'<div class="metric"><div class="metric-val w">{_fmt(r.power_w,2)}</div><div class="metric-lbl">Watts</div></div>'
-                f'</div><div class="soc-row">'
-                f'<div class="soc-track"><div class="soc-fill" style="width:{soc}%;background:{_soc_color(soc)}"></div></div>'
-                f'<div class="soc-label">SoC {soc}% &nbsp;·&nbsp; {r.cell_count or "?"} cells</div>'
-                f'</div>{temps}')
+
+        # ── Main metrics row ──────────────────────────────────────────────────
+        body = (
+            f'<div class="metrics">'
+            f'<div class="metric"><div class="metric-val v">{_fmt(r.voltage_v, 3)}</div>'
+            f'<div class="metric-lbl">Volts</div></div>'
+            f'<div class="metric"><div class="metric-val a">{_fmt(r.current_a, 3)}</div>'
+            f'<div class="metric-lbl">Amps</div></div>'
+            f'<div class="metric"><div class="metric-val w">{_fmt(r.power_w, 2)}</div>'
+            f'<div class="metric-lbl">Watts</div></div>'
+            f'</div>'
+        )
+
+        # ── SoC bar ───────────────────────────────────────────────────────────
+        body += (
+            f'<div class="soc-row">'
+            f'<div class="soc-track">'
+            f'<div class="soc-fill" style="width:{soc}%;background:{_soc_color(soc)}"></div>'
+            f'</div>'
+            f'<div class="soc-label">SoC {soc}%'
+            f'{f" &nbsp;·&nbsp; {r.remain_wh:.0f} Wh" if r.remain_wh else ""}'
+            f'</div></div>'
+        )
+
+        # ── Capacity / runtime row ────────────────────────────────────────────
+        cap_parts = []
+        if r.remain_ah is not None and r.nominal_ah is not None:
+            cap_parts.append(f'{r.remain_ah:.1f} / {r.nominal_ah:.1f} Ah')
+        if r.time_to_empty_h is not None:
+            h, m = divmod(int(r.time_to_empty_h * 60), 60)
+            cap_parts.append(f'TTE {h}h{m:02d}m')
+        if r.time_to_full_h is not None:
+            h, m = divmod(int(r.time_to_full_h * 60), 60)
+            cap_parts.append(f'TTF {h}h{m:02d}m')
+        if cap_parts:
+            body += f'<div class="temps">{" &nbsp;·&nbsp; ".join(cap_parts)}</div>'
+
+        # ── Pack info row ─────────────────────────────────────────────────────
+        info_parts = []
+        if r.cell_count:
+            info_parts.append(f'{r.cell_count} cells')
+        if r.cycle_count is not None:
+            info_parts.append(f'{r.cycle_count} cycles')
+        if r.charge_fet is not None:
+            cfet = '✓' if r.charge_fet else '✗'
+            dfet = '✓' if r.discharge_fet else '✗'
+            info_parts.append(f'CHG {cfet} DSG {dfet}')
+        if r.sw_version:
+            info_parts.append(f'fw {r.sw_version}')
+        if info_parts:
+            body += f'<div class="temps">{" &nbsp;·&nbsp; ".join(info_parts)}</div>'
+
+        # ── Temperatures ──────────────────────────────────────────────────────
+        if r.temp_c:
+            body += (f'<div class="temps">NTC: '
+                     f'{"  ".join(f"{t}°C" for t in r.temp_c)}</div>')
+
+        # ── Faults (only if active) ───────────────────────────────────────────
+        if r.faults:
+            fault_str = ', '.join(r.faults)
+            body += (f'<div class="temps" style="color:var(--red)">'
+                     f'⚠ {fault_str}</div>')
+
+        # ── Balance activity (only when any cell is balancing) ────────────────
+        if r.balance_cells and any(r.balance_cells):
+            bal_cells = [str(i+1) for i, b in enumerate(r.balance_cells) if b]
+            body += (f'<div class="temps" style="color:var(--yellow,#f59e0b)">'
+                     f'⚡ Balancing cell{"s" if len(bal_cells)>1 else ""}: '
+                     f'{", ".join(bal_cells)}</div>')
+
     return f'<div class="card bms">{header}{body}</div>'
 
 
