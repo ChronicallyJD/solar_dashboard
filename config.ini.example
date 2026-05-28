@@ -1,16 +1,15 @@
 [general]
-output           = dashboard.html
-state_file       = solar_state.json
-bms_interval     = 120
+output = dashboard.html
+state_file = solar_state.json
+bms_interval = 120
 victron_interval = 30
-scan_timeout     = 10
-max_history      = 600
-log_level        = INFO
-theme            = business
+scan_timeout = 10
+max_history = 600
+log_level = INFO
+theme = business
 
 [bms]
 # House Bank = AA:BB:CC:DD:EE:FF : 123456
 
 [victron]
-# See MANUAL.md Section 8 for setup instructions.
-# MultiPlus = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverter
+# MultiPlus = C0:FF:EE:12:34:56 : aabbccddeeff00112233445566778899  type=inverter

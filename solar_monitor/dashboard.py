@@ -3,20 +3,15 @@ solar_monitor/dashboard.py — HTML dashboard rendering
 ======================================================
 Builds the self-contained HTML dashboard file from DeviceReading data.
 
-The dashboard includes:
-  - A totals banner (battery bank V / A / W, PV input, yield today)
-  - A battery bank aggregate SoC card (average across all BMS packs)
-  - Per-device cards for each BMS and each Victron device
-  - Four Chart.js line graphs (battery V, current, PV power, SoC)
-  - Three switchable colour themes (dark, light, business) with localStorage persistence
+Layout (top to bottom):
+  1. Header bar (brand, timestamp, theme toggle)
+  2. Aggregate cards row — MPPT totals, Inverter totals, Battery totals
+  3. Individual MPPT solar charger cards
+  4. Individual Inverter cards
+  5. Individual BMS pack cards
+  6. Historical chart section (battery V, current, PV power, SoC)
 
-Totals logic:
-  Battery V / A / W: BMS readings only.
-    Victron devices are excluded to avoid double-counting (the MPPT charger
-    and the battery bank sit at the same voltage; mixing them in an average
-    is meaningless).
-  PV Power In / Yield Today: MPPT solar charger readings only (not inverters).
-    Inverter AC output appears on its own card and is not summed here.
+Three switchable colour themes: dark, light, business (localStorage persistence).
 """
 
 import json
@@ -74,183 +69,98 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     --glow-b:none;--glow-g:none;--glow-a:none;--glow-s:none;
     font-family:'Inter',sans-serif;
   }
-  /* suppress scanline */
   body.business::before { display:none; }
-
-  /* header */
   body.business header {
-    background:#ffffff;
-    border-bottom:1px solid var(--border);
-    box-shadow:0 1px 3px rgba(0,0,0,.06);
-    padding:18px 32px;
+    background:#ffffff; border-bottom:1px solid var(--border);
+    box-shadow:0 1px 3px rgba(0,0,0,.06); padding:18px 32px;
   }
   body.business .brand {
-    font-family:'DM Serif Display',serif;
-    font-weight:400; font-size:1.75rem;
-    letter-spacing:0; text-shadow:none; text-transform:none;
-    color:var(--text);
+    font-family:'DM Serif Display',serif; font-weight:400; font-size:1.75rem;
+    letter-spacing:0; text-shadow:none; text-transform:none; color:var(--text);
   }
   body.business .brand span { color:var(--accent); }
   body.business .meta {
-    font-family:'Inter',sans-serif; font-size:.75rem;
-    color:var(--muted); line-height:1.5;
+    font-family:'Inter',sans-serif; font-size:.75rem; color:var(--muted); line-height:1.5;
   }
   body.business .meta strong { color:var(--text); }
-
-  /* totals banner → flex row of stat cards */
-  body.business .totals {
-    display:flex; flex-wrap:wrap; gap:12px;
-    padding:20px 32px; background:none; border:none;
-  }
-  body.business .total-cell {
-    flex:1 1 140px; max-width:220px;
-    background:#fff; border:1px solid var(--border);
-    border-radius:10px; padding:16px 20px;
-    box-shadow:0 1px 3px rgba(0,0,0,.05);
-    display:flex; flex-direction:column; gap:4px;
-  }
-  body.business .total-label {
-    font-family:'Inter',sans-serif; font-size:.65rem;
-    font-weight:600; letter-spacing:.06em;
-    text-transform:uppercase; color:var(--muted);
-  }
-  body.business .total-value {
-    font-family:'Inter',sans-serif; font-size:2rem;
-    font-weight:700; line-height:1.1;
-    text-shadow:none;
-  }
-  body.business .total-unit {
-    font-family:'Inter',sans-serif; font-size:.65rem; color:var(--muted);
-  }
-
-  /* section titles */
   body.business .section-title {
-    font-family:'Inter',sans-serif; font-size:.65rem;
-    font-weight:700; letter-spacing:.1em; text-transform:uppercase;
-    padding:20px 32px 10px; color:var(--muted);
-    border-bottom:1px solid var(--border);
+    font-family:'Inter',sans-serif; font-size:.65rem; font-weight:700;
+    letter-spacing:.1em; text-transform:uppercase;
+    padding:20px 32px 10px; color:var(--muted); border-bottom:1px solid var(--border);
   }
-
-  /* cards grid — keep grid so aggregate card can span full width */
   body.business .cards {
-    display:grid;
-    grid-template-columns:repeat(auto-fill, minmax(280px,1fr));
-    gap:12px; padding:16px 32px;
-    background:none; border:none;
+    display:grid; grid-template-columns:repeat(auto-fill, minmax(280px,1fr));
+    gap:12px; padding:16px 32px; background:none; border:none;
   }
+  body.business .agg-cards {
+    display:flex; flex-wrap:nowrap;
+    gap:12px; padding:16px 32px; background:none; border:none;
+  }
+  body.business .agg-cards>.card { flex:1 1 0; min-width:0; }
   body.business .card {
-    background:#fff; border:1px solid var(--border);
-    border-radius:12px; padding:16px 18px;
-    box-shadow:0 1px 4px rgba(0,0,0,.06);
-    border-left:none;
-    min-width:0;         /* prevent grid blowout */
-    overflow:hidden;
+    background:#fff; border:1px solid var(--border); border-radius:12px;
+    padding:16px 18px; box-shadow:0 1px 4px rgba(0,0,0,.06);
+    border-left:none; min-width:0; overflow:hidden;
   }
   body.business .card.bms       { border-top:3px solid var(--accent); }
-  body.business .card.mppt      { border-top:3px solid var(--amber);  }
-  body.business .card.aggregate {
-    border-top:3px solid var(--violet);
-    grid-column:1 / -1;
-  }
-
-  /* card header — prevent badge from squeezing name */
+  body.business .card.mppt      { border-top:3px solid var(--amber); }
+  body.business .card.agg-mppt  { border-top:3px solid var(--solar);  min-width:260px; }
+  body.business .card.agg-inv   { border-top:3px solid var(--violet); min-width:260px; }
+  body.business .card.agg-bat   { border-top:3px solid var(--accent); min-width:260px; }
   body.business .card-header { gap:8px; align-items:flex-start; }
   body.business .card-name {
-    font-family:'Inter',sans-serif; font-weight:600;
-    font-size:.85rem; letter-spacing:0; text-transform:none;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    font-family:'Inter',sans-serif; font-weight:600; font-size:.85rem;
+    letter-spacing:0; text-transform:none; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis;
   }
   body.business .card-addr {
     font-family:'Inter',sans-serif; font-size:.6rem; color:var(--muted);
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
-
-  /* type pills */
   body.business .type-pill {
-    font-family:'Inter',sans-serif; font-size:.58rem;
-    font-weight:700; border-radius:4px; letter-spacing:.03em;
-    padding:1px 6px;
+    font-family:'Inter',sans-serif; font-size:.58rem; font-weight:700;
+    border-radius:4px; letter-spacing:.03em; padding:1px 6px;
   }
-  body.business .type-pill.bms  { background:rgba(29,78,216,.08); color:var(--accent); border-color:rgba(29,78,216,.25); }
-  body.business .type-pill.mppt { background:rgba(180,83,9,.08);  color:var(--amber);  border-color:rgba(180,83,9,.25); }
-  body.business .type-pill.inv  { background:rgba(109,40,217,.08);color:var(--violet); border-color:rgba(109,40,217,.25); }
-  body.business .type-pill.mon  { background:rgba(21,128,61,.08); color:var(--green);  border-color:rgba(21,128,61,.25); }
-
-  /* status badges */
+  body.business .type-pill.bms  { background:rgba(29,78,216,.08);  color:var(--accent); border-color:rgba(29,78,216,.25); }
+  body.business .type-pill.mppt { background:rgba(180,83,9,.08);   color:var(--amber);  border-color:rgba(180,83,9,.25); }
+  body.business .type-pill.inv  { background:rgba(109,40,217,.08); color:var(--violet); border-color:rgba(109,40,217,.25); }
+  body.business .type-pill.mon  { background:rgba(21,128,61,.08);  color:var(--green);  border-color:rgba(21,128,61,.25); }
   body.business .badge {
-    font-family:'Inter',sans-serif; font-weight:600;
-    font-size:.58rem; border-radius:4px; letter-spacing:.03em;
-    padding:2px 7px; white-space:nowrap; flex-shrink:0;
+    font-family:'Inter',sans-serif; font-weight:600; font-size:.58rem;
+    border-radius:4px; letter-spacing:.03em; padding:2px 7px; white-space:nowrap; flex-shrink:0;
   }
-  body.business .badge.ok    { background:rgba(21,128,61,.1);   color:var(--green); border-color:rgba(21,128,61,.3); }
-  body.business .badge.error { background:rgba(185,28,28,.08);  color:var(--red);   border-color:rgba(185,28,28,.25); }
-  body.business .badge.warn  { background:rgba(180,83,9,.08);   color:var(--amber); border-color:rgba(180,83,9,.25); }
-
-  /* metrics — tighter sizing so 3 values always fit */
+  body.business .badge.ok    { background:rgba(21,128,61,.1);  color:var(--green); border-color:rgba(21,128,61,.3); }
+  body.business .badge.error { background:rgba(185,28,28,.08); color:var(--red);   border-color:rgba(185,28,28,.25); }
+  body.business .badge.warn  { background:rgba(180,83,9,.08);  color:var(--amber); border-color:rgba(180,83,9,.25); }
   body.business .metrics { gap:6px; margin-bottom:10px; }
-  body.business .metric-val {
-    font-family:'Inter',sans-serif; font-weight:700;
-    font-size:1.2rem; line-height:1;
-  }
-  body.business .metric-lbl {
-    font-family:'Inter',sans-serif; font-weight:500;
-    font-size:.58rem; letter-spacing:.04em;
-  }
-
-  /* SoC bar */
+  body.business .metric-val { font-family:'Inter',sans-serif; font-weight:700; font-size:1.2rem; line-height:1; }
+  body.business .metric-lbl { font-family:'Inter',sans-serif; font-weight:500; font-size:.58rem; letter-spacing:.04em; }
   body.business .soc-track { background:rgba(0,0,0,.08); }
-  body.business .soc-label {
-    font-family:'Inter',sans-serif; font-size:.68rem;
-    white-space:nowrap;
-  }
-
-  /* state row */
-  body.business .state-row {
-    font-family:'Inter',sans-serif; font-size:.68rem;
-    gap:10px;
-  }
+  body.business .soc-label { font-family:'Inter',sans-serif; font-size:.68rem; white-space:nowrap; }
+  body.business .state-row { font-family:'Inter',sans-serif; font-size:.68rem; gap:10px; }
   body.business .state-k { font-family:'Inter',sans-serif; font-weight:500; }
   body.business .state-v { font-family:'Inter',sans-serif; }
-
-  /* aggregate card */
   body.business .agg-title {
     font-family:'Inter',sans-serif; font-weight:600;
-    font-size:.65rem; letter-spacing:.06em; text-transform:uppercase;
+    font-size:.65rem; letter-spacing:.06em; text-transform:uppercase; margin-bottom:14px;
   }
-  body.business .agg-stat-val {
-    font-family:'Inter',sans-serif; font-weight:700; font-size:1.9rem;
-  }
+  body.business .agg-stat-val { font-family:'Inter',sans-serif; font-weight:700; font-size:1.9rem; }
   body.business .agg-stat-lbl {
     font-family:'Inter',sans-serif; font-weight:500; font-size:.62rem;
     letter-spacing:.05em; text-transform:uppercase;
   }
-
-  /* error text */
-  body.business .error-msg {
-    font-family:'Inter',sans-serif; font-size:.72rem;
+  body.business .agg-big {
+    font-family:'Inter',sans-serif; font-weight:700; font-size:2.8rem;
+    line-height:1; letter-spacing:-.02em;
   }
-
-  /* charts */
-  body.business .charts-section { padding:8px 32px 0; }
-  body.business .chart-grid { gap:16px; }
-  body.business .chart-box {
-    border-radius:12px; border:1px solid var(--border);
-    box-shadow:0 1px 4px rgba(0,0,0,.05);
-    background:#fff;
-  }
-  body.business .chart-title {
-    font-family:'Inter',sans-serif; font-weight:600;
-    font-size:.68rem; letter-spacing:.04em; text-transform:uppercase;
-    color:var(--muted);
-  }
-
-  /* theme button */
-  body.business .theme-btn {
-    font-family:'Inter',sans-serif; font-weight:500;
-    border-radius:6px; font-size:.72rem;
-    border-color:var(--border);
-  }
+  body.business .agg-big-unit { font-family:'Inter',sans-serif; font-weight:400; font-size:.8rem; color:var(--muted); }
+  body.business .error-msg { font-family:'Inter',sans-serif; font-size:.72rem; }
+  body.business .chart-box { background:#fff; border-color:var(--border); }
+  body.business .chart-title { font-family:'Inter',sans-serif; font-weight:600; font-size:.68rem; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); }
+  body.business .theme-btn { font-family:'Inter',sans-serif; font-weight:500; border-radius:6px; font-size:.72rem; border-color:var(--border); }
   body.business footer { font-family:'Inter',sans-serif; }
+
+  /* ── Base (dark / light) ─────────────────────────────────────────────────── */
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
   body{background:var(--bg);color:var(--text);font-family:'Barlow Condensed',sans-serif;
     min-height:100vh;padding-bottom:60px}
@@ -266,25 +176,35 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .meta{font-family:'Share Tech Mono',monospace;font-size:.78rem;color:var(--muted);
     text-align:right;line-height:1.6}
   .meta strong{color:var(--text)}
-  .totals{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;
-    background:var(--border);border-bottom:1px solid var(--border)}
-  .total-cell{background:var(--panel);padding:22px 28px;display:flex;
-    flex-direction:column;gap:4px}
-  .total-label{font-size:.65rem;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
-  .total-value{font-family:'Share Tech Mono',monospace;font-size:2.5rem;line-height:1;font-weight:700}
-  .total-value.v{color:var(--accent);text-shadow:var(--glow-b)}
-  .total-value.a{color:var(--green);text-shadow:var(--glow-g)}
-  .total-value.w{color:var(--amber);text-shadow:var(--glow-a)}
-  .total-value.pv{color:var(--solar);text-shadow:var(--glow-s)}
-  .total-value.yld{color:var(--violet)}
-  .total-unit{font-size:.72rem;color:var(--muted);letter-spacing:.06em}
   .section-title{padding:26px 40px 10px;font-size:.68rem;letter-spacing:.25em;
     text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border)}
+
+  /* aggregate cards row — always 3 columns on wide screens, wraps on mobile */
+  .agg-cards{display:flex;flex-wrap:nowrap;gap:1px;
+    background:var(--border);border-bottom:1px solid var(--border)}
+  .agg-cards>.card{flex:1 1 0;min-width:0}
+  .card.agg-mppt{background:var(--panel);padding:22px 28px;border-left:3px solid var(--solar);min-width:260px}
+  .card.agg-inv {background:var(--panel);padding:22px 28px;border-left:3px solid var(--violet);min-width:260px}
+  .card.agg-bat {background:var(--panel);padding:22px 28px;border-left:3px solid var(--accent);min-width:260px}
+
+  /* individual device cards */
   .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));
     gap:1px;background:var(--border);border-bottom:1px solid var(--border)}
   .card{background:var(--panel);padding:22px 26px}
   .card.mppt{border-left:3px solid var(--solar)}
   .card.bms{border-left:3px solid var(--accent)}
+
+  /* aggregate card internals */
+  .agg-title{font-size:.65rem;letter-spacing:.2em;text-transform:uppercase;
+    color:var(--muted);margin-bottom:14px}
+  .agg-big{font-family:'Share Tech Mono',monospace;font-size:3.2rem;line-height:1;
+    font-weight:700;letter-spacing:-.01em}
+  .agg-big-unit{font-family:'Share Tech Mono',monospace;font-size:.8rem;color:var(--muted)}
+  .agg-summary{display:flex;gap:28px;flex-wrap:wrap;margin-top:14px}
+  .agg-stat{display:flex;flex-direction:column;gap:2px}
+  .agg-stat-val{font-family:'Share Tech Mono',monospace;font-size:1.6rem;line-height:1}
+  .agg-stat-lbl{font-size:.6rem;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+
   .card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}
   .card-name{font-size:1rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
   .card-addr{font-family:'Share Tech Mono',monospace;font-size:.65rem;color:var(--muted);margin-top:3px}
@@ -314,12 +234,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .state-row{margin-top:10px;font-family:'Share Tech Mono',monospace;font-size:.72rem;
     display:flex;gap:16px;flex-wrap:wrap}
   .state-kv{display:flex;gap:6px}.state-k{color:var(--muted)}.state-v{color:var(--text)}
-  .card.aggregate { border-left: 3px solid var(--violet); grid-column: 1 / -1; }
-  .agg-title { font-size:.65rem; letter-spacing:.2em; text-transform:uppercase; color:var(--muted); margin-bottom:4px; }
-  .agg-summary { display:flex; gap:28px; flex-wrap:wrap; }
-  .agg-stat { display:flex; flex-direction:column; gap:2px; }
-  .agg-stat-val { font-family:'Share Tech Mono',monospace; font-size:1.6rem; line-height:1; color:var(--violet); }
-  .agg-stat-lbl { font-size:.6rem; letter-spacing:.18em; text-transform:uppercase; color:var(--muted); }
   .error-msg{font-family:'Share Tech Mono',monospace;font-size:.72rem;color:var(--red);
     padding:8px 0;word-break:break-all}
   .charts-section{padding:26px 40px 0}
@@ -335,7 +249,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   footer{margin-top:36px;text-align:center;font-family:'Share Tech Mono',monospace;
     font-size:.68rem;color:var(--muted)}
   @media(max-width:700px){header{flex-direction:column;gap:12px;align-items:flex-start}
-    .totals{grid-template-columns:repeat(2,1fr)}.chart-grid{grid-template-columns:1fr}}
+    .agg-cards{flex-wrap:wrap}.cards{grid-template-columns:1fr}.chart-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -343,20 +257,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="brand">Solar <span>Monitor</span></div>
   <div style="display:flex;align-items:center;gap:16px">
     <button class="theme-btn" onclick="toggleTheme()" id="themeBtn">☀ Light</button>
-    <div class="meta"><strong>UPDATED</strong><br>__TIMESTAMP__<br>__BMS_COUNT__ BMS &nbsp;·&nbsp; __MPPT_COUNT__ MPPT</div>
+    <div class="meta"><strong>UPDATED</strong><br>__TIMESTAMP__<br>__BMS_COUNT__ BMS &nbsp;·&nbsp; __MPPT_COUNT__ Victron</div>
   </div>
 </header>
-<div class="totals">
-  <div class="total-cell"><div class="total-label">Avg Battery V</div><div class="total-value v">__TOTAL_V__</div><div class="total-unit">VOLTS</div></div>
-  <div class="total-cell"><div class="total-label">Net Current</div><div class="total-value a">__TOTAL_A__</div><div class="total-unit">AMPS</div></div>
-  <div class="total-cell"><div class="total-label">Battery Power</div><div class="total-value w">__TOTAL_W__</div><div class="total-unit">WATTS</div></div>
-  <div class="total-cell"><div class="total-label">PV Power In</div><div class="total-value pv">__TOTAL_PV__</div><div class="total-unit">WATTS (all MPPTs)</div></div>
-  <div class="total-cell"><div class="total-label">Yield Today</div><div class="total-value yld">__TOTAL_YLD__</div><div class="total-unit">Wh (all MPPTs)</div></div>
-</div>
-<div class="section-title">Battery Packs — JBD / Vatrer BMS</div>
-<div class="cards">__AGG_CARD____BMS_CARDS__</div>
-<div class="section-title">Solar Charge Controllers & Inverters — Victron</div>
+
+<div class="section-title">System Overview</div>
+<div class="agg-cards">__MPPT_AGG____INV_AGG____BAT_AGG__</div>
+
+<div class="section-title">MPPT Chargers — Individual</div>
 <div class="cards">__MPPT_CARDS__</div>
+<div class="section-title">Inverters — Individual</div>
+<div class="cards">__INV_CARDS__</div>
+<div class="section-title">Battery Packs — Individual</div>
+<div class="cards">__BMS_CARDS__</div>
+
 <div class="charts-section">
   <div class="section-title" style="padding:0 0 10px;border:none;">Historical Trends</div>
   <div class="chart-grid">
@@ -691,29 +605,137 @@ def _no_card(msg: str) -> str:
             f'monospace;font-size:.8rem;padding:30px">{msg}</div>')
 
 
-def render_bms_aggregate_card(bms_readings: list) -> str:
-    """Render a summary card showing the average SoC across all BMS packs."""
-    ok     = [r for r in bms_readings if not r.error and r.capacity_pct is not None]
+# ─────────────────────────────────────────────────────────────────────────────
+# Aggregate cards — one per system category, shown at top of dashboard
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_mppt_aggregate_card(mppt_readings: list) -> str:
+    """MPPT aggregate — total PV power in, yield today, charger states."""
+    ok = [r for r in mppt_readings
+          if not r.error and r.device_type == "mppt"]
+
+    total_pv    = sum(r.pv_power_w    or 0 for r in ok)
+    total_yield = sum(r.yield_today_wh or 0 for r in ok)
+    online      = len(ok)
+    total       = len([r for r in mppt_readings if r.device_type == "mppt"])
+
+    states: dict[str, int] = {}
+    for r in ok:
+        s = r.charger_state or "Unknown"
+        states[s] = states.get(s, 0) + 1
+    state_str = "  ·  ".join(f"{n}× {s}" for s, n in sorted(states.items())) or "—"
+
+    pv_str = _fmt(total_pv, 1)
+    yld_str = _fmt(total_yield, 0)
+
+    body = (
+        f'<div class="agg-title">☀ Solar — MPPT Chargers</div>'
+        f'<div class="agg-big" style="color:var(--solar)">{pv_str}'
+        f'<span class="agg-big-unit"> W</span></div>'
+        f'<div class="agg-summary">'
+        f'<div class="agg-stat">'
+        f'<div class="agg-stat-val" style="color:var(--violet)">{yld_str}</div>'
+        f'<div class="agg-stat-lbl">Yield Today (Wh)</div>'
+        f'</div>'
+        f'<div class="agg-stat">'
+        f'<div class="agg-stat-val">{online}/{total}</div>'
+        f'<div class="agg-stat-lbl">Chargers online</div>'
+        f'</div>'
+        f'<div class="agg-stat" style="flex:1;min-width:120px">'
+        f'<div class="agg-stat-val" style="font-size:1rem;color:var(--muted)">{state_str}</div>'
+        f'<div class="agg-stat-lbl">States</div>'
+        f'</div>'
+        f'</div>'
+    )
+    return f'<div class="card agg-mppt">{body}</div>'
+
+
+def render_inverter_aggregate_card(mppt_readings: list) -> str:
+    """Inverter aggregate — total AC out, states, alarms."""
+    ok = [r for r in mppt_readings
+          if not r.error and r.device_type == "inverter"]
+
+    total_ac_out = sum(r.ac_out_power_va or 0 for r in ok)
+    online       = len(ok)
+    total        = len([r for r in mppt_readings if r.device_type == "inverter"])
+
+    states: dict[str, int] = {}
+    for r in ok:
+        s = r.inverter_state or "Unknown"
+        states[s] = states.get(s, 0) + 1
+    state_str = "  ·  ".join(f"{n}× {s}" for s, n in sorted(states.items())) or "—"
+
+    alarms = [r for r in ok if r.alarm_reason and r.alarm_reason not in (None, 0, "None")]
+    alarm_str   = f"{len(alarms)} alarm(s)" if alarms else "None"
+    alarm_color = "var(--red)" if alarms else "var(--green)"
+
+    ac_str = _fmt(total_ac_out, 0)
+
+    body = (
+        f'<div class="agg-title">⚡ Inverter / VE.Bus</div>'
+        f'<div class="agg-big" style="color:var(--violet)">{ac_str}'
+        f'<span class="agg-big-unit"> W AC out</span></div>'
+        f'<div class="agg-summary">'
+        f'<div class="agg-stat">'
+        f'<div class="agg-stat-val">{online}/{total}</div>'
+        f'<div class="agg-stat-lbl">Inverters online</div>'
+        f'</div>'
+        f'<div class="agg-stat" style="flex:1;min-width:120px">'
+        f'<div class="agg-stat-val" style="font-size:1rem;color:var(--muted)">{state_str}</div>'
+        f'<div class="agg-stat-lbl">States</div>'
+        f'</div>'
+        f'<div class="agg-stat">'
+        f'<div class="agg-stat-val" style="color:{alarm_color}">{alarm_str}</div>'
+        f'<div class="agg-stat-lbl">Alarms</div>'
+        f'</div>'
+        f'</div>'
+    )
+    return f'<div class="card agg-inv">{body}</div>'
+
+
+def render_battery_aggregate_card(bms_readings: list) -> str:
+    """Battery aggregate — avg SoC bar, total Wh remaining, total Ah, packs online."""
+    ok = [r for r in bms_readings if not r.error and r.capacity_pct is not None]
     total  = len(bms_readings)
     online = len(ok)
 
-    avg_soc = round(sum(r.capacity_pct for r in ok) / len(ok)) if ok else None
+    avg_soc     = round(sum(r.capacity_pct for r in ok) / online) if ok else None
+    total_wh    = sum(r.remain_wh   or 0 for r in ok)
+    total_ah    = sum(r.remain_ah   or 0 for r in ok)
+    nom_wh      = sum(r.nominal_wh  or 0 for r in ok)
+    net_amps    = sum(r.current_a   or 0 for r in ok if r.current_a is not None)
+
     color   = _soc_color(avg_soc) if avg_soc is not None else "var(--muted)"
     pct_str = f"{avg_soc}%" if avg_soc is not None else "—"
+    wh_str  = _fmt(total_wh, 0)
+    ah_str  = f"{total_ah:.1f}"
+    nom_str = f"{nom_wh:.0f}" if nom_wh else "—"
 
     bar = (
-        f'<div style="margin:18px 0 6px">'
-        f'<div class="soc-track" style="height:12px;border-radius:6px">'
+        f'<div style="margin:14px 0 6px">'
+        f'<div class="soc-track" style="height:10px;border-radius:5px">'
         f'<div class="soc-fill" style="width:{avg_soc or 0}%;background:{color};'
-        f'border-radius:6px;transition:width 1s ease"></div>'
+        f'border-radius:5px;transition:width 1s ease"></div>'
         f'</div></div>'
     )
 
-    stats = (
+    body = (
+        f'<div class="agg-title">🔋 Battery Bank</div>'
+        f'<div class="agg-big" style="color:{color}">{pct_str}'
+        f'<span class="agg-big-unit"> avg SoC</span></div>'
+        f'{bar}'
         f'<div class="agg-summary">'
         f'<div class="agg-stat">'
-        f'<div class="agg-stat-val" style="font-size:3rem;color:{color}">{pct_str}</div>'
-        f'<div class="agg-stat-lbl">Average SoC</div>'
+        f'<div class="agg-stat-val" style="color:var(--accent)">{wh_str}</div>'
+        f'<div class="agg-stat-lbl">Wh remaining</div>'
+        f'</div>'
+        f'<div class="agg-stat">'
+        f'<div class="agg-stat-val">{ah_str} / {nom_str}</div>'
+        f'<div class="agg-stat-lbl">Ah rem / nom</div>'
+        f'</div>'
+        f'<div class="agg-stat">'
+        f'<div class="agg-stat-val" style="color:var(--green)">{_fmt(net_amps, 1)}</div>'
+        f'<div class="agg-stat-lbl">Net amps</div>'
         f'</div>'
         f'<div class="agg-stat">'
         f'<div class="agg-stat-val">{online}/{total}</div>'
@@ -721,65 +743,66 @@ def render_bms_aggregate_card(bms_readings: list) -> str:
         f'</div>'
         f'</div>'
     )
-
-    body = f'<div class="agg-title">Battery Bank — State of Charge</div>{bar}{stats}'
-    return f'<div class="card aggregate">{body}</div>'
+    return f'<div class="card agg-bat">{body}</div>'
 
 
 def build_html(bms_readings: list, mppt_readings: list, history: dict, theme: str = "dark") -> str:
     """
     Render the complete HTML dashboard as a string.
 
-    Totals banner logic:
-    - Avg Battery V / Net Current / Battery Power: BMS readings only.
-      Victron devices are excluded to avoid double-counting (the MPPT charger
-      and the battery sit at the same voltage; averaging them is meaningless).
-    - PV Power In / Yield Today: MPPT solar charger readings only (not inverters).
-      Inverter AC output is shown on its own card, not summed here.
+    Layout (top to bottom):
+      1. MPPT aggregate card  — total PV W, yield today, charger states
+      2. Inverter aggregate card — total AC out W, states, alarms
+      3. Battery aggregate card  — avg SoC bar, total Wh/Ah, net amps, pack count
+      4. Individual MPPT charger cards
+      5. Individual Inverter cards
+      6. Individual BMS pack cards
+      7. Historical charts
 
     Args:
         bms_readings:  DeviceReading list from JBD/Vatrer BMS devices.
         mppt_readings: DeviceReading list from Victron devices (all types).
         history:       Rolling dict of {device_name: [reading_dict, …]} for charts.
         theme:         CSS theme class applied to <body>: "dark", "light", or "business".
-
-    Returns:
-        Complete HTML document as a string, ready to write to disk.
     """
-    ok_bms  = [r for r in bms_readings  if not r.error and r.voltage_v is not None]
-    ok_mppt = [r for r in mppt_readings if not r.error]
+    # Split Victron readings by device type
+    mppt_solar = [r for r in mppt_readings if r.device_type == "mppt"]
+    mppt_inv   = [r for r in mppt_readings if r.device_type == "inverter"]
+    mppt_other = [r for r in mppt_readings
+                  if r.device_type not in ("mppt", "inverter")]
 
-    # Battery voltage and current totals are BMS-only.
-    # Including Victron devices would double-count: the MPPT charger and the battery
-    # both sit at ~53V — averaging them inflates the count and muddles the meaning.
-    # Battery Power = sum of BMS pack watts (V × I per pack).
-    total_v   = _fmt(sum(r.voltage_v for r in ok_bms) / len(ok_bms), 3) if ok_bms else "—"
-    total_a   = _fmt(sum(r.current_a for r in ok_bms if r.current_a is not None), 3)
-    total_w   = _fmt(sum(r.power_w   for r in ok_bms if r.power_w   is not None), 2)
+    # Aggregate cards
+    mppt_agg = render_mppt_aggregate_card(mppt_readings) if mppt_readings else \
+               _no_card("No MPPT chargers configured")
+    inv_agg  = render_inverter_aggregate_card(mppt_readings) if mppt_inv else \
+               _no_card("No inverters configured")
+    bat_agg  = render_battery_aggregate_card(bms_readings) if bms_readings else \
+               _no_card("No BMS packs configured")
 
-    # PV power = sum of MPPT solar charger output watts only (not inverter AC output).
-    ok_mppt_solar = [r for r in ok_mppt if r.device_type == "mppt"]
-    ok_mppt_inv   = [r for r in ok_mppt if r.device_type == "inverter"]
-    total_pv  = _fmt(sum(r.pv_power_w    for r in ok_mppt_solar if r.pv_power_w    is not None), 1)
-    total_yld = _fmt(sum(r.yield_today_wh for r in ok_mppt_solar if r.yield_today_wh is not None), 0)
-    # Inverter AC output power shown separately in its card; not summed into battery totals
-
-    agg_card  = render_bms_aggregate_card(bms_readings) if bms_readings else ""
-    bms_html  = "".join(render_bms_card(r)      for r in bms_readings)  or _no_card("No JBD / Vatrer BMS devices found")
-    mppt_html = "".join(render_victron_card(r)   for r in mppt_readings) or _no_card("No Victron devices found")
+    # Individual device cards, grouped by type
+    mppt_cards = (
+        "".join(render_victron_card(r) for r in mppt_solar + mppt_other)
+        or _no_card("No MPPT chargers found")
+    )
+    inv_cards  = (
+        "".join(render_victron_card(r) for r in mppt_inv)
+        or _no_card("No inverters found")
+    )
+    bms_cards  = (
+        "".join(render_bms_card(r) for r in bms_readings)
+        or _no_card("No JBD / Vatrer BMS devices found")
+    )
 
     return (HTML_TEMPLATE
             .replace("__TIMESTAMP__",    datetime.now().strftime("%Y-%m-%d  %H:%M:%S"))
             .replace("__BMS_COUNT__",    str(len(bms_readings)))
             .replace("__MPPT_COUNT__",   str(len(mppt_readings)))
-            .replace("__TOTAL_V__",      total_v)
-            .replace("__TOTAL_A__",      total_a)
-            .replace("__TOTAL_W__",      total_w)
-            .replace("__TOTAL_PV__",     total_pv)
-            .replace("__TOTAL_YLD__",    total_yld)
-            .replace("__AGG_CARD__",     agg_card)
-            .replace("__BMS_CARDS__",    bms_html)
-            .replace("__MPPT_CARDS__",   mppt_html)
+            .replace("__MPPT_AGG__",     mppt_agg)
+            .replace("__INV_AGG__",      inv_agg)
+            .replace("__BAT_AGG__",      bat_agg)
+            .replace("__MPPT_CARDS__",   mppt_cards)
+            .replace("__INV_CARDS__",    inv_cards)
+            .replace("__BMS_CARDS__",    bms_cards)
             .replace("__SERVER_THEME__", theme)
             .replace("__HISTORY_JSON__", json.dumps(history, indent=2)))
 
