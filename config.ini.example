@@ -12,4 +12,4 @@ theme = business
 # House Bank = AA:BB:CC:DD:EE:FF : 123456
 
 [victron]
-# MultiPlus = C0:FF:EE:12:34:56 : aabbccddeeff00112233445566778899  type=inverter
+# MultiPlus = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverter

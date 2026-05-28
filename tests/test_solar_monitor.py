@@ -45,6 +45,11 @@ sys.path.insert(0, "/home/claude")
 from solar_monitor import jbd as jbd_mod
 from solar_monitor import models as m_mod
 from solar_monitor import dashboard as dash_mod
+from solar_monitor.dashboard import (
+    render_mppt_aggregate_card, render_inverter_aggregate_card,
+    render_battery_aggregate_card, render_bms_card, render_victron_card,
+    build_html,
+)
 from solar_monitor import victron as v_mod
 from solar_monitor.jbd import _checksum, _verify_checksum, _parse_basic_info
 from solar_monitor.models import DeviceReading
@@ -958,7 +963,202 @@ class TestInverterCard(unittest.TestCase):
         self.assertIn("AC1", html)
 
 
+class TestMpptAggregateCard(unittest.TestCase):
+    """render_mppt_aggregate_card — total PV power, yield, charger states."""
+
+    def _mppt(self, name="South", **kw):
+        r = _make_inverter.__func__(name=name) if False else DeviceReading(
+            address="CC:DD", name=name, device_type="mppt", timestamp="t")
+        r.pv_power_w = kw.get("pv_power_w", 400.0)
+        r.yield_today_wh = kw.get("yield_today_wh", 2000.0)
+        r.charger_state = kw.get("charger_state", "Float")
+        r.voltage_v = 54.0; r.current_a = 7.0; r.power_w = 378.0
+        r.faults = []; r.temp_c = []
+        if kw.get("error"):
+            r.error = kw["error"]
+        return r
+
+    def test_sums_pv_power(self):
+        readings = [self._mppt("S1", pv_power_w=400.0),
+                    self._mppt("S2", pv_power_w=280.0)]
+        html = dash_mod.render_mppt_aggregate_card(readings)
+        self.assertIn("680", html)   # 400 + 280
+
+    def test_sums_yield_today(self):
+        readings = [self._mppt("S1", yield_today_wh=2000.0),
+                    self._mppt("S2", yield_today_wh=1200.0)]
+        html = dash_mod.render_mppt_aggregate_card(readings)
+        self.assertIn("3200", html)
+
+    def test_online_count(self):
+        err = self._mppt("Dead", error="timeout")
+        html = dash_mod.render_mppt_aggregate_card(
+            [self._mppt("S1"), err])
+        self.assertIn("1/2", html)
+
+    def test_charger_states_summarised(self):
+        readings = [self._mppt("S1", charger_state="Float"),
+                    self._mppt("S2", charger_state="Float"),
+                    self._mppt("S3", charger_state="Bulk")]
+        html = dash_mod.render_mppt_aggregate_card(readings)
+        self.assertIn("Float", html)
+        self.assertIn("Bulk", html)
+
+    def test_empty_readings_no_crash(self):
+        html = dash_mod.render_mppt_aggregate_card([])
+        self.assertIsInstance(html, str)
+
+    def test_returns_agg_mppt_card(self):
+        html = dash_mod.render_mppt_aggregate_card([self._mppt()])
+        self.assertIn("agg-mppt", html)
+
+
+class TestInverterAggregateCard(unittest.TestCase):
+    """render_inverter_aggregate_card — AC output, states, alarms."""
+
+    def test_sums_ac_out(self):
+        inv1 = _make_inverter(name="Inv1")
+        inv2 = _make_inverter(name="Inv2")
+        inv1.ac_out_power_va = 755.0
+        inv2.ac_out_power_va = 245.0
+        html = dash_mod.render_inverter_aggregate_card([inv1, inv2])
+        self.assertIn("1000", html)
+
+    def test_inverter_state_shown(self):
+        html = dash_mod.render_inverter_aggregate_card([_make_inverter()])
+        self.assertIn("Inverting", html)
+
+    def test_no_alarm_shown(self):
+        html = dash_mod.render_inverter_aggregate_card([_make_inverter()])
+        self.assertIn("None", html)
+
+    def test_online_count(self):
+        err = _make_inverter(name="Dead")
+        err.error = "timeout"
+        html = dash_mod.render_inverter_aggregate_card(
+            [_make_inverter(), err])
+        self.assertIn("1/2", html)
+
+    def test_non_inverter_devices_ignored(self):
+        """MPPT readings should not pollute the inverter aggregate."""
+        mppt_r = DeviceReading(address="X", name="MPPT", device_type="mppt",
+                               timestamp="t")
+        mppt_r.ac_out_power_va = 9999.0
+        mppt_r.faults = []; mppt_r.temp_c = []
+        html = dash_mod.render_inverter_aggregate_card([_make_inverter(), mppt_r])
+        # Only the inverter's 755W should appear, not 9999
+        self.assertNotIn("9999", html)
+
+    def test_empty_no_crash(self):
+        html = dash_mod.render_inverter_aggregate_card([])
+        self.assertIsInstance(html, str)
+
+    def test_returns_agg_inv_card(self):
+        html = dash_mod.render_inverter_aggregate_card([_make_inverter()])
+        self.assertIn("agg-inv", html)
+
+
+class TestBatteryAggregateCard(unittest.TestCase):
+    """render_battery_aggregate_card — avg SoC, Wh, Ah, packs online."""
+
+    def test_average_soc(self):
+        b1 = _make_bms(capacity_pct=84)
+        b2 = _make_bms(capacity_pct=76)
+        html = dash_mod.render_battery_aggregate_card([b1, b2])
+        self.assertIn("80%", html)   # (84+76)/2 = 80
+
+    def test_soc_bar_present(self):
+        html = dash_mod.render_battery_aggregate_card([_make_bms(capacity_pct=84)])
+        self.assertIn("soc-fill", html)
+
+    def test_total_wh(self):
+        b1 = _make_bms(remain_wh=4500.0)
+        b2 = _make_bms(remain_wh=3900.0)
+        html = dash_mod.render_battery_aggregate_card([b1, b2])
+        self.assertIn("8400", html)
+
+    def test_online_count(self):
+        err = _make_bms(name="Dead")
+        err.error = "timeout"
+        html = dash_mod.render_battery_aggregate_card([_make_bms(), err])
+        self.assertIn("1/2", html)
+
+    def test_net_amps(self):
+        b1 = _make_bms(current_a=-10.0)
+        b2 = _make_bms(current_a=-5.0)
+        html = dash_mod.render_battery_aggregate_card([b1, b2])
+        self.assertIn("-15", html)
+
+    def test_empty_no_crash(self):
+        html = dash_mod.render_battery_aggregate_card([])
+        self.assertIsInstance(html, str)
+
+    def test_returns_agg_bat_card(self):
+        html = dash_mod.render_battery_aggregate_card([_make_bms()])
+        self.assertIn("agg-bat", html)
+
+
+class TestDashboardLayout(unittest.TestCase):
+    """build_html — verify the new layout order and section structure."""
+
+    def setUp(self):
+        bms  = [_make_bms(name="Batt1"), _make_bms(name="Batt2")]
+        mppt_r = DeviceReading(address="CC:DD", name="South", device_type="mppt",
+                               timestamp="t")
+        mppt_r.pv_power_w = 680.0; mppt_r.yield_today_wh = 3200.0
+        mppt_r.charger_state = "Float"; mppt_r.voltage_v = 54.0
+        mppt_r.current_a = 12.0; mppt_r.power_w = 648.0
+        mppt_r.faults = []; mppt_r.temp_c = []
+        inv  = _make_inverter(name="MultiPlus")
+        self.html = dash_mod.build_html(bms, [mppt_r, inv], {}, theme="business")
+
+    def test_all_device_names_present(self):
+        for name in ("Batt1", "Batt2", "South", "MultiPlus"):
+            self.assertIn(name, self.html)
+
+    def test_all_placeholders_replaced(self):
+        for ph in ("__MPPT_AGG__", "__INV_AGG__", "__BAT_AGG__",
+                   "__MPPT_CARDS__", "__INV_CARDS__", "__BMS_CARDS__"):
+            self.assertNotIn(ph, self.html, f"Placeholder {ph} not replaced")
+
+    def test_no_old_placeholders(self):
+        for ph in ("__AGG_CARD__", "__TOTAL_V__", "__TOTAL_A__",
+                   "__TOTAL_W__", "__TOTAL_PV__", "__TOTAL_YLD__"):
+            self.assertNotIn(ph, self.html, f"Old placeholder {ph} still present")
+
+    def test_system_overview_section(self):
+        self.assertIn("System Overview", self.html)
+
+    def test_three_agg_cards_in_one_container(self):
+        self.assertEqual(self.html.count('<div class="agg-cards">'), 1)
+
+    def test_mppt_individual_section(self):
+        self.assertIn("MPPT Chargers", self.html)
+
+    def test_inverter_individual_section(self):
+        self.assertIn("Inverters", self.html)
+
+    def test_bms_individual_section(self):
+        self.assertIn("Battery Packs", self.html)
+
+    def test_layout_order_aggregates_before_individuals(self):
+        pos_agg     = self.html.index("System Overview")
+        pos_ind     = self.html.index("MPPT Chargers — Individual")
+        self.assertLess(pos_agg, pos_ind, "Aggregates must come before individual cards")
+
+    def test_agg_cards_flex_nowrap_css(self):
+        self.assertIn("flex-wrap:nowrap", self.html)
+
+    def test_agg_cards_min_width(self):
+        self.assertIn("min-width:260px", self.html)
+
+    def test_html_is_valid_string(self):
+        self.assertIn("<!DOCTYPE html>", self.html)
+        self.assertIn("</html>", self.html)
+
+
 class TestDashboardAggregates(unittest.TestCase):
+    """build_html — basic smoke tests."""
 
     def test_build_html_no_crash(self):
         bms1 = _make_bms(name="Batt1")
@@ -979,6 +1179,26 @@ class TestDashboardAggregates(unittest.TestCase):
         for theme in ("dark", "light", "business"):
             html = dash_mod.build_html([r], [], {}, theme=theme)
             self.assertIn(theme, html)
+
+    def test_mppt_and_inverter_split_into_separate_sections(self):
+        """MPPT and inverter cards must appear in their own sections."""
+        mppt_r = DeviceReading(address="M1", name="SolarArray",
+                               device_type="mppt", timestamp="t")
+        mppt_r.pv_power_w = 500.0; mppt_r.yield_today_wh = 1000.0
+        mppt_r.charger_state = "Float"; mppt_r.voltage_v = 54.0
+        mppt_r.current_a = 9.0; mppt_r.power_w = 486.0
+        mppt_r.faults = []; mppt_r.temp_c = []
+        inv = _make_inverter(name="MyInverter")
+        html = dash_mod.build_html([], [mppt_r, inv], {}, theme="dark")
+        pos_mppt_sec = html.index("MPPT Chargers — Individual")
+        pos_inv_sec  = html.index("Inverters — Individual")
+        pos_solar    = html.index("SolarArray")
+        pos_inv_name = html.index("MyInverter")
+        self.assertLess(pos_mppt_sec, pos_inv_sec)
+        # SolarArray card should appear in its own MPPT section
+        self.assertGreater(pos_solar, pos_mppt_sec)
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
