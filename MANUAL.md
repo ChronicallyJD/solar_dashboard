@@ -801,95 +801,457 @@ Label = MAC : 32-char-key  [ type=mppt|inverter|monitor|dcdc ]
 
 ---
 
-## 15. HTTPS Dashboard Server
+## 15. HTTPS Dashboard Server & API
 
-Solar Monitor includes a built-in HTTPS server that serves the dashboard HTML
-and state JSON directly — no nginx, no separate web server needed.
+Solar Monitor includes a built-in HTTPS server. It serves the live HTML
+dashboard and a JSON API over TLS — no nginx, no separate web server
+required. The server runs as an `asyncio` task inside the supervisor process.
+
+---
 
 ### 15.1 Quick start
 
-Add a `[server]` section to `config.ini`:
-
 ```ini
 [server]
 enabled   = true
 port      = 4443
-auto_cert = true      # generate a self-signed cert on first run
+auto_cert = true
 ```
-
-Start the supervisor normally:
 
 ```bash
 python3 solar_monitor.py --config config.ini
+# → HTTPS server listening on https://0.0.0.0:4443/
+# →   Dashboard:  https://localhost:4443/dashboard.html
+# →   State API:  https://localhost:4443/state.json
 ```
 
-Browse to `https://your-pi-ip:4443/` — your browser will warn about the
-self-signed certificate the first time (see Section 15.4 to dismiss it).
+Your browser will warn about the self-signed certificate on first visit.
+See Section 15.5 to trust it permanently.
 
-### 15.2 Configuration
+---
 
-All settings live in the `[server]` section:
+### 15.2 Configuration reference
+
+All settings live in the `[server]` section of `config.ini`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Start the HTTPS server (`true`/`false`/`yes`/`1`/`on`) |
+| `host` | string | `0.0.0.0` | Address to bind. `0.0.0.0` = all interfaces |
+| `port` | integer | `4443` | Port to listen on. Ports < 1024 require root |
+| `cert_file` | path | `server.crt` | TLS certificate (PEM). Auto-generated if missing and `auto_cert = true` |
+| `key_file` | path | `server.key` | TLS private key (PEM). Auto-generated if missing and `auto_cert = true` |
+| `auto_cert` | bool | `true` | Generate a self-signed certificate when `cert_file` does not exist |
+
+**Complete annotated example:**
 
 ```ini
 [server]
 
-# Enable the HTTPS server (default: false — disabled)
+# Enable the HTTPS server (disabled by default)
 enabled   = true
 
-# Address to bind on.  0.0.0.0 = all interfaces.
+# Bind address — 0.0.0.0 listens on all network interfaces
 host      = 0.0.0.0
 
-# Port to listen on.  4443 avoids needing root (ports < 1024 require it).
+# Port — 4443 requires no special privileges
 port      = 4443
 
-# TLS certificate and private key files.
-# If auto_cert = true and these files don't exist, they are generated automatically.
+# TLS certificate and private key (PEM format)
+# Auto-generated on first run when auto_cert = true
 cert_file = server.crt
 key_file  = server.key
 
-# Automatically generate a self-signed certificate when cert_file doesn't exist.
-# Set to false if you supply your own certificate (e.g. from Let's Encrypt).
+# Automatically generate a self-signed certificate if cert_file is missing.
+# Set to false when using a real certificate (e.g. from Let's Encrypt).
 auto_cert = true
 ```
 
-**Full example with all defaults explicit:**
+---
 
-```ini
-[server]
-enabled   = false
-host      = 0.0.0.0
-port      = 4443
-cert_file = server.crt
-key_file  = server.key
-auto_cert = true
+### 15.3 API reference
+
+All endpoints require HTTPS. All responses include `Connection: close` and
+`Content-Length`. Only `GET` requests are accepted; all other methods return
+`404 Not Found`.
+
+---
+
+#### `GET /` or `GET /dashboard.html`
+
+Returns the live HTML dashboard.
+
+**Response**
+
+| Header | Value |
+|---|---|
+| Status | `200 OK` |
+| `Content-Type` | `text/html; charset=utf-8` |
+
+**Body:** The contents of the `output` file configured in `[general]` —
+the same file the dashboard writer updates after every poll cycle. The
+dashboard is a self-contained HTML file with embedded CSS, JavaScript,
+and chart data.
+
+**If the dashboard has not been generated yet** (workers have not completed
+their first poll), a plain HTML placeholder is returned:
+
+```html
+<html><body>Dashboard not yet generated. Check monitor logs.</body></html>
 ```
 
-### 15.3 Routes
+**Example:**
 
-| Route | Response | Notes |
+```bash
+curl -k https://localhost:4443/
+curl -k https://localhost:4443/dashboard.html
+```
+
+---
+
+#### `GET /state.json`
+
+Returns the raw shared state as JSON. This is the primary machine-readable
+API endpoint — it contains all readings from all monitored devices.
+
+**Response**
+
+| Header | Value |
+|---|---|
+| Status | `200 OK` |
+| `Content-Type` | `application/json` |
+
+**Body:** The shared state file verbatim. If the state file does not exist
+yet, an empty JSON object `{}` is returned rather than an error.
+
+**Top-level structure:**
+
+```json
+{
+  "bms": {
+    "updated": "2024-01-15T08:15:42",
+    "readings": [ ...DeviceReading objects... ]
+  },
+  "victron": {
+    "updated": "2024-01-15T08:15:11",
+    "readings": [ ...DeviceReading objects... ]
+  }
+}
+```
+
+| Field | Type | Description |
 |---|---|---|
-| `GET /` | Dashboard HTML | Same as the `output` file |
-| `GET /dashboard.html` | Dashboard HTML | Same as `/` |
-| `GET /state.json` | Raw state JSON | All BMS and Victron readings |
-| `GET /health` | `200 OK` | Health check for load balancers |
-| Everything else | `404 Not Found` | |
+| `bms.updated` | ISO 8601 string or `null` | Timestamp of the last successful BMS poll |
+| `bms.readings` | array | One object per configured BMS device |
+| `victron.updated` | ISO 8601 string or `null` | Timestamp of the last successful Victron poll |
+| `victron.readings` | array | One object per configured Victron device |
 
-### 15.4 Self-signed certificates
+**DeviceReading object — common fields (all device types):**
 
-When `auto_cert = true` and `cert_file` does not exist, the server generates
-a self-signed RSA-2048 certificate on first run:
+| Field | Type | Description |
+|---|---|---|
+| `address` | string | Bluetooth MAC address (`AA:BB:CC:DD:EE:FF`) |
+| `name` | string | Label from `config.ini` |
+| `device_type` | string | `"bms"`, `"mppt"`, `"inverter"`, `"monitor"`, `"dcdc"`, `"meter"` |
+| `timestamp` | string | ISO 8601 timestamp of this reading |
+| `voltage_v` | float or `null` | DC battery/pack voltage (V) |
+| `current_a` | float or `null` | DC current (A). Positive = charging, negative = discharging |
+| `power_w` | float or `null` | DC power (W). For VE.Bus inverters = AC apparent power |
+| `error` | string or `null` | Human-readable error message. `null` on success |
 
-- **Validity:** 10 years
-- **SAN entries:** `localhost`, `127.0.0.1`, and the configured `host` address
-- **Key permissions:** `600` (owner-readable only)
-- **Storage:** `cert_file` / `key_file` paths from config
+**DeviceReading object — BMS fields** (`device_type = "bms"`):
 
-**Dismissing the browser warning permanently:**
+| Field | Type | Description |
+|---|---|---|
+| `capacity_pct` | integer or `null` | State of charge, 0–100% |
+| `remain_ah` | float or `null` | Remaining capacity (Ah) |
+| `nominal_ah` | float or `null` | Design capacity (Ah) |
+| `remain_wh` | float or `null` | Remaining energy (Wh) at current voltage |
+| `nominal_wh` | float or `null` | Design energy (Wh) |
+| `time_to_empty_h` | float or `null` | Hours until empty at current discharge rate |
+| `time_to_full_h` | float or `null` | Hours until full at current charge rate |
+| `cycle_count` | integer or `null` | Full charge cycles completed |
+| `cell_count` | integer or `null` | Number of cells in series |
+| `sw_version` | string or `null` | BMS firmware version (e.g. `"6.2"`) |
+| `production_date` | string or `null` | Pack production date (`"YYYY-MM-DD"`) |
+| `temp_c` | array of float | NTC sensor readings (°C). Empty array if none |
+| `balance_cells` | array of integer or `null` | Per-cell balance flags. `1` = actively balancing, `0` = idle. Indexed from 0 (cell 1) |
+| `protection_bits` | integer or `null` | Raw 16-bit protection status register |
+| `faults` | array of string | Active fault names. Empty when healthy. See fault table below |
+| `charge_fet` | boolean or `null` | Charge MOSFET enabled |
+| `discharge_fet` | boolean or `null` | Discharge MOSFET enabled |
 
-Add the certificate to your OS or browser trust store. The cert file
-(`server.crt` by default) is a standard PEM file.
+**BMS fault names** (appear in the `faults` array when active):
 
-*macOS:* `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain server.crt`
+| Fault string | Bit | Trigger condition |
+|---|---|---|
+| `"Cell overvoltage"` | 0 | Individual cell voltage too high |
+| `"Cell undervoltage"` | 1 | Individual cell voltage too low |
+| `"Pack overvoltage"` | 2 | Total pack voltage too high |
+| `"Pack undervoltage"` | 3 | Total pack voltage too low |
+| `"Charge overtemp"` | 4 | Temperature too high during charging |
+| `"Charge undertemp"` | 5 | Temperature too low during charging |
+| `"Discharge overtemp"` | 6 | Temperature too high during discharge |
+| `"Discharge undertemp"` | 7 | Temperature too low during discharge |
+| `"Charge overcurrent"` | 8 | Charge current exceeded limit |
+| `"Discharge overcurrent"` | 9 | Discharge current exceeded limit |
+| `"Short circuit"` | 10 | Short circuit detected |
+| `"IC error"` | 11 | BMS internal IC failure |
+| `"MOS lock"` | 12 | MOSFET locked by protection |
+
+**DeviceReading object — MPPT solar charger fields** (`device_type = "mppt"`):
+
+| Field | Type | Description |
+|---|---|---|
+| `pv_power_w` | float or `null` | PV panel input power (W) |
+| `yield_today_wh` | float or `null` | Energy harvested since midnight (Wh) |
+| `load_current_a` | float or `null` | Load output current (A). `null` on models without load terminal |
+| `charger_state` | string or `null` | Charger state. See states table below |
+
+**MPPT charger states:**
+
+| Value | Meaning |
+|---|---|
+| `"Off"` | Not charging |
+| `"Low Power"` | Reduced power output |
+| `"Fault"` | Fault condition |
+| `"Bulk"` | Bulk charging phase |
+| `"Absorption"` | Absorption phase (constant voltage) |
+| `"Float"` | Float maintenance charge |
+| `"Storage"` | Storage mode |
+| `"Equalize (manual)"` | Manual equalisation |
+| `"Inverting"` | Inverter mode (combined units) |
+| `"Power Supply"` | Power supply mode |
+| `"Starting Up"` | Startup sequence |
+| `"Repeated Absorption"` | Repeated absorption |
+| `"Auto Equalize"` | Automatic equalisation |
+| `"Battery Safe"` | Battery-safe mode |
+| `"External Control"` | Externally controlled |
+
+**DeviceReading object — Inverter / VE.Bus fields** (`device_type = "inverter"`):
+
+| Field | Type | Description |
+|---|---|---|
+| `ac_out_power_va` | float or `null` | AC output power. Real watts for VE.Bus; apparent VA for others |
+| `ac_out_voltage_v` | float or `null` | AC output voltage (V) |
+| `ac_out_current_a` | float or `null` | AC output current (A) |
+| `inverter_state` | string or `null` | Device state. See states table below |
+| `ac_in_power_w` | float or `null` | AC input real power (W). Positive = from grid, negative = feed-in |
+| `ac_in_source` | string or `null` | AC input source: `"AC1"`, `"AC2"`, `"Not connected"` |
+| `vebus_error` | integer or `null` | VE.Bus error code. `0` = no error |
+| `temperature_c` | float or `null` | Battery temperature measured by dongle (°C) |
+| `alarm_reason` | string or `null` | Alarm level: `"Warning"`, `"Alarm"`, or `null` for none |
+
+**Inverter / VE.Bus states:**
+
+| Value | Meaning |
+|---|---|
+| `"Off"` | Inverter off |
+| `"Low Power"` | Standby / low-power mode |
+| `"Fault"` | Fault condition |
+| `"Bulk"` | Bulk charging |
+| `"Absorption"` | Absorption charging |
+| `"Float"` | Float charging |
+| `"Storage"` | Storage mode |
+| `"Equalize"` | Equalisation |
+| `"Passthrough"` | Passing AC through from grid |
+| `"Inverting"` | Inverting (generating AC from battery) |
+| `"Power Assist"` | Assisting grid with battery power |
+| `"Power Supply"` | Power supply mode |
+| `"Charge"` | Charging from AC input |
+| `"External Control"` | VE.Bus external control active |
+
+**DeviceReading object — Battery Monitor fields** (`device_type = "monitor"`):
+
+| Field | Type | Description |
+|---|---|---|
+| `capacity_pct` | integer or `null` | State of charge 0–100% |
+| `ttg_minutes` | integer or `null` | Time to go in minutes |
+| `alarm_reason` | integer or `null` | Alarm bitmask (SmartShunt raw alarm register) |
+
+**Full annotated JSON example** — BMS reading with all fields populated:
+
+```json
+{
+  "bms": {
+    "updated": "2024-01-15T08:15:42",
+    "readings": [
+      {
+        "address":        "A1:B2:C3:D4:E5:F6",
+        "name":           "House Bank",
+        "device_type":    "bms",
+        "timestamp":      "2024-01-15T08:15:40",
+        "voltage_v":      54.32,
+        "current_a":      -15.0,
+        "power_w":        -814.8,
+        "capacity_pct":   84,
+        "remain_ah":      84.0,
+        "nominal_ah":     100.0,
+        "remain_wh":      4562.9,
+        "nominal_wh":     5432.0,
+        "time_to_empty_h": 5.6,
+        "time_to_full_h": null,
+        "cycle_count":    8,
+        "cell_count":     16,
+        "sw_version":     "6.2",
+        "production_date":"2025-11-26",
+        "temp_c":         [23.1, 21.8, 21.9],
+        "balance_cells":  [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "protection_bits": 0,
+        "faults":         [],
+        "charge_fet":     true,
+        "discharge_fet":  true,
+        "error":          null
+      }
+    ]
+  },
+  "victron": {
+    "updated": "2024-01-15T08:15:11",
+    "readings": [
+      {
+        "address":         "C0:FF:EE:12:34:56",
+        "name":            "Multiplus",
+        "device_type":     "inverter",
+        "timestamp":       "2024-01-15T08:15:09",
+        "voltage_v":       54.0,
+        "current_a":       -15.0,
+        "power_w":         -810.0,
+        "ac_out_power_va": 755.0,
+        "ac_in_power_w":   0.0,
+        "ac_in_source":    "Not connected",
+        "inverter_state":  "Inverting",
+        "temperature_c":   26.0,
+        "alarm_reason":    null,
+        "vebus_error":     0,
+        "error":           null
+      },
+      {
+        "address":        "11:22:33:44:55:66",
+        "name":           "South Array",
+        "device_type":    "mppt",
+        "timestamp":      "2024-01-15T08:15:09",
+        "voltage_v":      54.0,
+        "current_a":      12.0,
+        "power_w":        648.0,
+        "pv_power_w":     680.0,
+        "yield_today_wh": 3200.0,
+        "charger_state":  "Float",
+        "load_current_a": null,
+        "error":          null
+      }
+    ]
+  }
+}
+```
+
+**Example — offline device** (`error` field populated, electrical fields `null`):
+
+```json
+{
+  "address":     "A1:B2:C3:D4:E5:F6",
+  "name":        "House Bank",
+  "device_type": "bms",
+  "timestamp":   "2024-01-15T08:15:40",
+  "voltage_v":   null,
+  "current_a":   null,
+  "power_w":     null,
+  "error":       "TIMEOUT (35s) — device connected but did not respond"
+}
+```
+
+**Example requests:**
+
+```bash
+# Fetch raw state (ignore self-signed cert warning)
+curl -sk https://localhost:4443/state.json | python3 -m json.tool
+
+# Extract BMS SoC values for all packs
+curl -sk https://localhost:4443/state.json | \
+  python3 -c "import json,sys; s=json.load(sys.stdin); \
+  [print(r['name'], r['capacity_pct']) for r in s['bms']['readings']]"
+
+# Check when data was last updated
+curl -sk https://localhost:4443/state.json | \
+  python3 -c "import json,sys; s=json.load(sys.stdin); \
+  print('BMS:', s['bms']['updated']); print('Victron:', s['victron']['updated'])"
+
+# Using Python requests library (with cert verification disabled for self-signed)
+import requests
+state = requests.get("https://192.168.1.10:4443/state.json", verify=False).json()
+house_bank = next(r for r in state["bms"]["readings"] if r["name"] == "House Bank")
+print(f"SoC: {house_bank['capacity_pct']}%  Remaining: {house_bank['remain_wh']:.0f} Wh")
+```
+
+---
+
+#### `GET /health`
+
+Lightweight health check endpoint for monitoring systems and load balancers.
+
+**Response**
+
+| Header | Value |
+|---|---|
+| Status | `200 OK` |
+| `Content-Type` | `text/plain` |
+
+**Body:** `OK`
+
+**Example:**
+
+```bash
+curl -sk https://localhost:4443/health
+# OK
+```
+
+---
+
+#### All other paths
+
+**Response:** `404 Not Found` with body `Not Found`
+
+Non-`GET` methods (POST, PUT, DELETE, etc.) also return `404 Not Found`.
+
+---
+
+### 15.4 Response headers
+
+All responses from the server include these headers:
+
+| Header | Value | Notes |
+|---|---|---|
+| `Content-Type` | Varies by route | `text/html; charset=utf-8`, `application/json`, or `text/plain` |
+| `Content-Length` | Byte count | Always set; no chunked encoding |
+| `Connection` | `close` | Connection is closed after every response |
+
+The server does not set `Cache-Control`, `ETag`, `Last-Modified`, or CORS
+headers. If you need caching control or cross-origin access, put nginx
+in front (Section 15.10).
+
+---
+
+### 15.5 TLS and certificate details
+
+**Auto-generated self-signed certificates** are created with:
+
+- **Algorithm:** RSA-2048 with SHA-256 signature
+- **Validity:** 10 years from generation date
+- **Common Name:** `Solar Monitor`
+- **Subject Alternative Names:**
+  - `DNS: localhost`
+  - `IP: 127.0.0.1`
+  - `IP: <host>` if `host` is an IP address other than `0.0.0.0`
+  - `DNS: <host>` if `host` is a hostname
+- **Key file permissions:** `600` (owner-readable only)
+- **Minimum TLS version:** 1.2
+
+**Trusting the certificate in your browser/OS:**
+
+*macOS:*
+```bash
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain server.crt
+```
 
 *Linux (system-wide):*
 ```bash
@@ -897,114 +1259,207 @@ sudo cp server.crt /usr/local/share/ca-certificates/solar-monitor.crt
 sudo update-ca-certificates
 ```
 
-*Windows:* Double-click `server.crt` → Install Certificate → Local Machine → Trusted Root.
+*Windows:* Right-click `server.crt` → Install Certificate →
+Local Machine → Place all certificates in: Trusted Root Certification Authorities.
 
-*Chrome / Firefox:* Settings → Privacy & Security → Certificates → Import.
+*Chrome / Chromium:* Settings → Privacy and Security → Security →
+Manage certificates → Authorities → Import → select `server.crt`.
 
-### 15.5 Using a real certificate (Let's Encrypt)
+*Firefox:* Settings → Privacy & Security → View Certificates →
+Authorities → Import → select `server.crt`.
 
-If the Pi is reachable by domain name, use Certbot:
+---
 
-```bash
-sudo apt install certbot
-sudo certbot certonly --standalone -d solar.yourdomain.com
-```
-
-Point the config at the issued files:
+### 15.6 Using a real certificate (Let's Encrypt)
 
 ```ini
 [server]
 enabled   = true
-port      = 443           # standard HTTPS — requires running as root or with CAP_NET_BIND_SERVICE
-cert_file = /etc/letsencrypt/live/solar.yourdomain.com/fullchain.pem
-key_file  = /etc/letsencrypt/live/solar.yourdomain.com/privkey.pem
-auto_cert = false         # never overwrite the real cert
+port      = 443
+cert_file = /etc/letsencrypt/live/solar.example.com/fullchain.pem
+key_file  = /etc/letsencrypt/live/solar.example.com/privkey.pem
+auto_cert = false
 ```
 
-For port 443 without root, grant the capability:
+For port 443 without root:
 
 ```bash
-sudo setcap 'cap_net_bind_service=+ep' /usr/bin/python3.12
+sudo setcap 'cap_net_bind_service=+ep' $(which python3)
 ```
 
-Or use a port above 1024 and put nginx in front as a reverse proxy.
+---
 
-### 15.6 Running with nginx as a reverse proxy
+### 15.7 nginx reverse proxy
 
-This is the recommended production setup — nginx handles port 443 and TLS
-termination, solar_monitor listens on an internal-only HTTP port:
+Recommended for production. nginx handles TLS from the internet; solar
+monitor listens on `127.0.0.1` only.
 
 ```ini
 [server]
 enabled   = true
-host      = 127.0.0.1    # bind to localhost only — nginx proxies to it
+host      = 127.0.0.1
 port      = 4443
 auto_cert = true
 ```
 
-`/etc/nginx/sites-available/solar`:
-
 ```nginx
 server {
     listen 443 ssl;
-    server_name solar.yourdomain.com;
+    server_name solar.example.com;
 
-    ssl_certificate     /etc/letsencrypt/live/solar.yourdomain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/solar.yourdomain.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/solar.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/solar.example.com/privkey.pem;
 
     location / {
         proxy_pass https://127.0.0.1:4443;
-        proxy_ssl_verify off;               # internal self-signed cert — OK
+        proxy_ssl_verify off;
         add_header Cache-Control "no-cache";
     }
 }
 ```
 
-### 15.7 How it works
-
-The HTTPS server runs as an `asyncio` Task inside the supervisor — it shares
-the event loop with the dashboard writer and needs no separate process.
-It uses Python's built-in `ssl.SSLContext` wrapped around `asyncio.start_server`.
-
-Each request is handled asynchronously: the server reads the request line,
-routes it, and streams the response. A 10-second read timeout prevents stalled
-connections from holding resources.
-
-The server always serves the current contents of the `output` file — the same
-file the dashboard writer updates every `victron_interval / 2` seconds.
+---
 
 ### 15.8 Security notes
 
-- **Only GET requests are accepted** — POST, DELETE, and all other methods
-  return 404.
-- **No authentication** — the dashboard is served to anyone who can reach
-  the port. Use firewall rules, VPN, or nginx `auth_basic` if you need
-  access control.
-- **TLS 1.2 minimum** — TLS 1.0 and 1.1 are disabled.
-- **Private key permissions** — auto-generated keys are written with `chmod 600`.
-- **No directory traversal** — only three explicit paths are served; all others
-  return 404.
+- **Only `GET` is accepted.** `POST`, `PUT`, `DELETE`, and all other methods
+  return `404 Not Found`.
+- **No authentication.** The API is open to anyone who can reach the port.
+  Use firewall rules (`ufw allow from 192.168.1.0/24 to any port 4443`),
+  VPN, or nginx `auth_basic` to restrict access.
+- **No directory traversal.** Only the four named routes are served.
+  All other paths return `404`.
+- **TLS 1.2 minimum.** TLS 1.0 and 1.1 are disabled.
+- **Read timeout: 10 seconds** per request line to prevent slow-client attacks.
+- **No response body for 404.** The 404 response body is the literal string
+  `Not Found` — no path or file information is disclosed.
+
+---
 
 ### 15.9 Troubleshooting
 
-**Browser shows `NET::ERR_CERT_AUTHORITY_INVALID`**
+**`NET::ERR_CERT_AUTHORITY_INVALID` in browser**
 
-Expected with a self-signed cert. Either add the cert to the trust store
-(Section 15.4) or accept the risk for a local dashboard.
+Expected with a self-signed cert. Trust it (Section 15.5) or use Let's
+Encrypt (Section 15.6).
 
 **`FileNotFoundError: HTTPS server: certificate file(s) not found`**
 
-`auto_cert = false` and the cert/key files don't exist. Either set
-`auto_cert = true` or provide the files at the configured paths.
+`auto_cert = false` but the cert/key files do not exist. Either set
+`auto_cert = true` or supply the files.
 
 **`OSError: [Errno 98] Address already in use`**
 
-Another process is using the port. Change `port` or stop the other process:
+Port already occupied:
+
 ```bash
 sudo lsof -i :4443
+sudo fuser -k 4443/tcp   # force-release the port
 ```
 
 **`PermissionError: [Errno 13] Permission denied`**
 
-Port below 1024 requires root or `CAP_NET_BIND_SERVICE`. Use port ≥ 1024
-(recommended: 4443) or grant the capability (Section 15.5).
+Port < 1024 requires root or `CAP_NET_BIND_SERVICE`. Use port ≥ 1024.
+
+**`curl: (60) SSL certificate problem: self-signed certificate`**
+
+Use `curl -k` (or `--insecure`) to skip verification, or add the cert to
+your system trust store.
+
+**State file returns `{}`**
+
+Workers have not written their first poll yet. Wait one `bms_interval`
+(default 120 s) and retry.
+
+---
+
+### 15.10 Home automation integration examples
+
+The `/state.json` endpoint is designed for integration with Home Assistant,
+Node-RED, or any script that wants live solar data.
+
+**Home Assistant (REST sensor):**
+
+```yaml
+# configuration.yaml
+sensor:
+  - platform: rest
+    name: "Solar House Bank SoC"
+    resource: "https://192.168.1.10:4443/state.json"
+    verify_ssl: false
+    value_template: >
+      {{ value_json.bms.readings[0].capacity_pct }}
+    unit_of_measurement: "%"
+    scan_interval: 60
+
+  - platform: rest
+    name: "Solar PV Power"
+    resource: "https://192.168.1.10:4443/state.json"
+    verify_ssl: false
+    value_template: >
+      {{ value_json.victron.readings
+         | selectattr('device_type', 'eq', 'mppt')
+         | map(attribute='pv_power_w') | sum | round(1) }}
+    unit_of_measurement: "W"
+    scan_interval: 30
+```
+
+**Node-RED (HTTP Request node):**
+
+Configure an HTTP Request node with:
+- Method: `GET`
+- URL: `https://192.168.1.10:4443/state.json`
+- TLS: disable certificate verification for self-signed certs
+
+Parse with a Function node:
+
+```javascript
+const state   = JSON.parse(msg.payload);
+const pack    = state.bms.readings[0];
+const inverter= state.victron.readings.find(r => r.device_type === 'inverter');
+
+msg.payload = {
+    soc:      pack?.capacity_pct,
+    remain_wh: pack?.remain_wh,
+    ac_out_w:  inverter?.ac_out_power_va,
+    pv_total_w: state.victron.readings
+                  .filter(r => r.device_type === 'mppt')
+                  .reduce((s, r) => s + (r.pv_power_w ?? 0), 0),
+};
+return msg;
+```
+
+**Python polling script:**
+
+```python
+import requests
+import time
+
+URL = "https://192.168.1.10:4443/state.json"
+
+while True:
+    try:
+        state = requests.get(URL, verify=False, timeout=5).json()
+
+        for pack in state["bms"]["readings"]:
+            if pack.get("error"):
+                print(f"{pack['name']}: OFFLINE — {pack['error']}")
+            else:
+                print(f"{pack['name']}: "
+                      f"{pack['capacity_pct']}% SoC  "
+                      f"{pack['remain_wh']:.0f} Wh  "
+                      f"{pack['current_a']:+.1f} A")
+
+        pv_total = sum(
+            r.get("pv_power_w") or 0
+            for r in state["victron"]["readings"]
+            if r["device_type"] == "mppt"
+        )
+        print(f"Total PV: {pv_total:.0f} W")
+        print(f"BMS last updated: {state['bms']['updated']}")
+
+    except Exception as e:
+        print(f"Error: {e}")
+
+    time.sleep(30)
+```
