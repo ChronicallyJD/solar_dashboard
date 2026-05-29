@@ -22,6 +22,7 @@
 14. [Reference](#14-reference)
 15. [HTTPS Dashboard Server](#15-https-dashboard-server)
 16. [MCP Server](#16-mcp-server)
+17. [Historical Data & SQLite Storage](#17-historical-data--sqlite-storage)
 
 ---
 
@@ -155,7 +156,7 @@ python3 solar_monitor.py --config config.ini
 
 ```bash
 python3 -m unittest discover -s tests -v
-# Expected: 623 tests, 0 failures (runs without BLE hardware or browser)
+# Expected: 722 tests, 0 failures (runs without BLE hardware or browser)
 ```
 
 ---
@@ -698,7 +699,7 @@ ls -la solar_state.json    # watch modification time
 ```bash
 cd /path/to/solar_monitor
 python3 -m unittest discover -s tests -v
-# Expected: 623 tests, 0 failures — no BLE hardware or browser needed
+# Expected: 722 tests, 0 failures — no BLE hardware or browser needed
 ```
 
 ---
@@ -756,6 +757,10 @@ python3 -m unittest discover -s tests -v
 | `tests/test_console_monitor.py` | Rich console dashboard tests |
 | `tests/test_https_server.py` | HTTPS server, cert, routing, config tests |
 | `mcp_server.py` | MCP server — AI assistant integration, 8 tools |
+| `solar_monitor/history.py` | SQLite history store, HistoryDB, retention |
+| `utils/purge_history.py` | CLI utility: purge history by date/device |
+| `utils/query_history.py` | CLI utility: query and export history as CSV/JSON |
+| `tests/test_history.py` | History DB, config, retention, purge, utils tests |
 | `tests/test_mcp_server.py` | MCP server: tools, security, dispatch tests |
 
 ### 14.4 Config quick reference
@@ -776,6 +781,12 @@ Label = MAC [ : password ]
 
 [victron]
 Label = MAC : 32-char-key  [ type=mppt|inverter|monitor|dcdc ]
+
+[history]
+enabled              = false           # enable SQLite history
+db_path              = solar_history.db  # database file path
+retention_days       = 1095              # 3 years (0 = keep forever)
+vacuum_interval_days = 7                 # VACUUM frequency
 
 [mcp]
 enabled       = true            # start MCP server
@@ -1992,3 +2003,319 @@ Options:
 ```
 
 All log output goes to **stderr**. Stdout is reserved for JSON-RPC messages.
+
+---
+
+## 17. Historical Data & SQLite Storage
+
+Solar Monitor can persist every reading to a local SQLite database, providing
+long-term history independent of the in-memory rolling window used for
+dashboard charts. The database stores all device readings with full field
+fidelity, indexed for fast date-range queries, and automatically enforces a
+configurable retention policy.
+
+By default history storage is **disabled** — enable it by adding a `[history]`
+section to `config.ini`.
+
+---
+
+### 17.1 How it works
+
+Each worker (`bms_monitor.py`, `victron_monitor.py`) writes readings to
+the SQLite database immediately after every successful poll cycle, in addition
+to updating the shared state file. On startup, workers load the most recent
+readings from the database to pre-populate the in-memory history used by
+dashboard charts — so charts show real history across restarts.
+
+Unsuccessful readings (where `error` is set) are never stored. The database
+is shared between workers; SQLite WAL mode ensures concurrent writes never
+block each other or the dashboard reader.
+
+---
+
+### 17.2 Configuration
+
+```ini
+[history]
+
+# Enable SQLite history storage (disabled by default)
+enabled = true
+
+# Database file path. Relative paths are resolved from the working directory.
+# The parent directories are created automatically if they don't exist.
+db_path = solar_history.db
+
+# How many days of history to retain. Older rows are deleted automatically
+# during each write cycle (at most once per hour).
+# 0 = keep forever (no automatic deletion).
+# Default: 1095 (3 years).
+retention_days = 1095
+
+# How often to run VACUUM to compact the database file and reclaim disk space.
+# VACUUM runs automatically when the configured number of days has passed
+# since the last VACUUM.
+vacuum_interval_days = 7
+```
+
+**Retention guidance:**
+
+| Interval | Days |
+|---|---|
+| 1 year | 365 |
+| 2 years | 730 |
+| 3 years (default) | 1095 |
+| 5 years | 1825 |
+| Keep forever | 0 |
+
+**Disk space estimate:** at 30-second Victron poll and 120-second BMS poll
+with 4 devices, expect roughly 3–5 MB per month, or 40–60 MB per year.
+The database compresses well; a 3-year store with 4 devices typically fits
+under 200 MB.
+
+---
+
+### 17.3 Database schema
+
+One table: `readings`. Every `DeviceReading` field has its own column.
+
+**Identity columns (indexed):**
+
+| Column | Type | Description |
+|---|---|---|
+| `recorded_at` | TEXT | UTC timestamp at time of storage (ISO 8601) |
+| `device_name` | TEXT | Display label from config |
+| `device_type` | TEXT | `"bms"`, `"mppt"`, `"inverter"`, `"monitor"`, etc. |
+| `address` | TEXT | Bluetooth MAC address |
+
+**Electrical fundamentals:** `voltage_v`, `current_a`, `power_w`
+
+**BMS-specific:** `capacity_pct`, `cell_count`, `remain_ah`, `nominal_ah`,
+`remain_wh`, `nominal_wh`, `time_to_empty_h`, `time_to_full_h`,
+`cycle_count`, `sw_version`, `production_date`, `protection_bits`,
+`charge_fet`, `discharge_fet`, `temp_c` (JSON), `faults` (JSON),
+`balance_cells` (JSON)
+
+**MPPT-specific:** `pv_power_w`, `yield_today_wh`, `load_current_a`,
+`charger_state`
+
+**Inverter/VE.Bus-specific:** `ac_out_power_va`, `ac_out_voltage_v`,
+`ac_out_current_a`, `inverter_state`, `ac_in_power_w`, `ac_in_source`,
+`vebus_error`, `temperature_c`
+
+List fields (`temp_c`, `faults`, `balance_cells`) are stored as JSON strings.
+Indexes exist on `recorded_at`, `device_name`, `device_type`, and the
+composite `(device_name, recorded_at)`.
+
+---
+
+### 17.4 Management utilities
+
+Two command-line utilities live in the `utils/` directory. Both accept a
+`--config` argument and can be run from the repository root without
+installation.
+
+---
+
+#### `utils/purge_history.py` — delete historical data
+
+```
+python utils/purge_history.py [OPTIONS]
+
+Filters (AND logic — combine freely):
+  --before DATE         Delete rows with recorded_at < DATE
+  --after  DATE         Delete rows with recorded_at > DATE
+  --device NAME         Restrict to this device name (exact match)
+  --type   TYPE         Restrict to device type: bms, mppt, inverter, ...
+
+Actions:
+  --enforce-retention   Delete all rows older than retention_days
+  --vacuum              Run VACUUM after deletion to reclaim space
+  --stats               Show database statistics and exit
+  --list-devices        List all devices with row counts and exit
+
+Safety:
+  --dry-run             Count matching rows without deleting
+  --yes / -y            Skip the confirmation prompt
+```
+
+**Examples:**
+
+```bash
+# See database statistics first
+python utils/purge_history.py --config config.ini --stats
+
+# Dry run — see what would be deleted before a given date
+python utils/purge_history.py --config config.ini \
+    --before 2023-01-01 --dry-run
+
+# Delete everything before 1 January 2023
+python utils/purge_history.py --config config.ini \
+    --before 2023-01-01
+
+# Delete a specific bad-data window (e.g. sensor was misconfigured)
+python utils/purge_history.py --config config.ini \
+    --after 2024-03-01 --before 2024-03-05
+
+# Remove all data for a decommissioned device
+python utils/purge_history.py --config config.ini \
+    --device "Old Pack"
+
+# Delete old BMS data but keep Victron data
+python utils/purge_history.py --config config.ini \
+    --type bms --before 2023-06-01
+
+# Apply the configured retention policy right now, then compact
+python utils/purge_history.py --config config.ini \
+    --enforce-retention --vacuum
+
+# Non-interactive (scripted/cron use)
+python utils/purge_history.py --config config.ini \
+    --before 2023-01-01 --yes
+```
+
+---
+
+#### `utils/query_history.py` — query and export data
+
+```
+python utils/query_history.py [OPTIONS]
+
+Filters:
+  --device NAME         Filter by device name (exact match)
+  --type   TYPE         Filter by device type
+  --start  DATE         Earliest recorded_at (e.g. 2024-01-01, or 'today', 'yesterday')
+  --end    DATE         Latest  recorded_at (inclusive)
+  --limit  N            Maximum number of rows
+
+Output:
+  --format table|csv|json   Output format (default: table)
+  --fields col1,col2,...    Comma-separated column list
+
+Info:
+  --stats               Show database statistics
+  --list-devices        List all devices with row counts
+  --list-fields         List all available column names
+```
+
+**Examples:**
+
+```bash
+# Show recent readings for all devices (terminal table)
+python utils/query_history.py --config config.ini
+
+# Export a device's full history as CSV
+python utils/query_history.py --config config.ini \
+    --device "House Bank" --format csv > house_bank.csv
+
+# Export a date range as JSON
+python utils/query_history.py --config config.ini \
+    --start 2024-01-01 --end 2024-01-31 --format json
+
+# Export only key fields — useful for smaller CSV files
+python utils/query_history.py --config config.ini \
+    --device "House Bank" \
+    --fields recorded_at,voltage_v,current_a,capacity_pct,remain_wh \
+    --format csv > house_bank_soc.csv
+
+# Today's MPPT yield
+python utils/query_history.py --config config.ini \
+    --type mppt --start today \
+    --fields recorded_at,device_name,pv_power_w,yield_today_wh
+
+# Most recent 20 readings
+python utils/query_history.py --config config.ini \
+    --limit 20 --order desc
+
+# All available column names
+python utils/query_history.py --config config.ini --list-fields
+```
+
+---
+
+### 17.5 Automatic retention enforcement
+
+Retention is enforced automatically — no cron job required. After each
+write batch, the worker checks whether retention enforcement was run in the
+last hour. If not, it deletes all rows where `recorded_at` is older than
+`retention_days` days ago.
+
+This means:
+
+- Retention runs at most once per hour per worker process.
+- Old data is removed gradually as new data arrives.
+- No separate cleanup process or scheduled task is needed.
+
+To apply retention immediately (e.g. after changing `retention_days` to a
+smaller value), run:
+
+```bash
+python utils/purge_history.py --config config.ini --enforce-retention
+```
+
+To disable automatic retention and manage it manually, set:
+
+```ini
+[history]
+retention_days = 0
+```
+
+Then schedule `purge_history.py` via cron:
+
+```cron
+# Purge data older than 1 year, every Sunday at 03:00
+0 3 * * 0 cd /home/pi/solar_monitor && python utils/purge_history.py \
+    --config config.ini --before $(date -d '1 year ago' +\%Y-\%m-\%d) --yes
+```
+
+---
+
+### 17.6 Dashboard chart integration
+
+When history is enabled, workers load the most recent readings from SQLite
+on startup to pre-populate the in-memory chart history. This means:
+
+- Charts show real data immediately after a restart, not just data since the
+  last restart.
+- The in-memory rolling window (`max_history`, default 600 points) is
+  seeded from SQLite, then extended in memory as new polls arrive.
+- The SQLite database is not queried on every dashboard render — only on
+  worker startup. Live chart updates continue to use the in-memory dict.
+
+---
+
+### 17.7 Troubleshooting
+
+**`FileNotFoundError: database not found`** (utils)
+
+The database is created automatically when the first reading is written.
+Make sure the monitor has run at least one successful poll cycle with
+`[history] enabled = true` before using the utilities.
+
+**Database grows faster than expected**
+
+Check `vacuum_interval_days`. After large deletions the file size does not
+shrink until VACUUM runs. Run it manually:
+
+```bash
+python utils/purge_history.py --config config.ini --vacuum
+```
+
+Or reduce the vacuum interval:
+
+```ini
+[history]
+vacuum_interval_days = 1
+```
+
+**Charts are empty after enabling history**
+
+The in-memory history dict is populated on startup from the most recent
+`max_history` readings. If the database is new and no polls have completed,
+the dict will be empty until the first poll. This is expected — restart the
+monitor after the first poll cycle.
+
+**History writes are slow**
+
+SQLite WAL mode (used by default) typically handles hundreds of inserts per
+second. If writes are slow, check that the database is on a local filesystem
+(not NFS or a network share) and that the disk is not full.

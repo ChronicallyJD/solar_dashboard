@@ -61,6 +61,14 @@ async def main() -> None:
     macs    = [dc.mac for dc in cfg.mppt_devices if dc.mac]
     scanner = VictronScanner(macs)
 
+    # Open history database if enabled
+    db = None
+    if cfg.history.enabled:
+        from solar_monitor.history import HistoryDB
+        db = HistoryDB(cfg.history)
+        history = db.load_recent_for_dashboard(cfg.max_history)
+        log.info(f"Victron history DB: {cfg.history.db_path}  retention: {cfg.history.retention_days}d")
+
     log.info(
         f"Victron worker starting — state: {cfg.state_file}  "
         f"interval: {interval}s  passive scan  {len(macs)} MAC(s)"
@@ -84,6 +92,13 @@ async def main() -> None:
             save_section(cfg.state_file, "victron", victron_readings)
         except Exception as exc:
             log.error(f"Failed to write Victron state: {exc}")
+
+        # Persist to history database
+        if db is not None and victron_readings:
+            try:
+                db.write_readings(victron_readings)
+            except Exception as exc:
+                log.error(f"Failed to write Victron history: {exc}")
 
         for r in victron_readings:
             entry = {"timestamp": r.timestamp, "voltage_v": r.voltage_v,

@@ -128,6 +128,7 @@ class DeviceConfig:
 
 
 from .server import ServerConfig
+from .history import HistoryConfig, load_history_config
 
 
 @dataclass
@@ -147,7 +148,8 @@ class AppConfig:
     once:             bool  = False
     auto_discover_bms:  bool = True
     auto_discover_mppt: bool = True
-    server: ServerConfig = field(default_factory=ServerConfig)
+    server:  ServerConfig  = field(default_factory=ServerConfig)
+    history: HistoryConfig = field(default_factory=HistoryConfig)
 
 
 # ── MAC / key parsing helpers ─────────────────────────────────────────────────
@@ -296,6 +298,9 @@ def load_config(ini_path: Optional[str]) -> AppConfig:
             key_file  = s.get("key_file",  "server.key"),
             auto_cert = _bool("auto_cert", True),
         )
+
+    # [history] ----------------------------------------------------------------
+    cfg.history = load_history_config(str(ini_file))
 
     # [bms] --------------------------------------------------------------------
     if "bms" in parser and parser["bms"]:

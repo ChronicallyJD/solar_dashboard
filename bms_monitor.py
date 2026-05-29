@@ -58,6 +58,14 @@ async def main() -> None:
     output_path = Path(cfg.output)
     history: dict = {}
 
+    # Open history database if enabled
+    db = None
+    if cfg.history.enabled:
+        from solar_monitor.history import HistoryDB
+        db = HistoryDB(cfg.history)
+        history = db.load_recent_for_dashboard(cfg.max_history)
+        log.info(f"BMS history DB: {cfg.history.db_path}  retention: {cfg.history.retention_days}d")
+
     log.info(
         f"BMS worker starting — state: {cfg.state_file}  "
         f"interval: {interval}s  (direct MAC connection, no scan)"
@@ -79,6 +87,13 @@ async def main() -> None:
             save_section(cfg.state_file, "bms", bms_readings)
         except Exception as exc:
             log.error(f"Failed to write BMS state: {exc}")
+
+        # Persist to history database
+        if db is not None and bms_readings:
+            try:
+                db.write_readings(bms_readings)
+            except Exception as exc:
+                log.error(f"Failed to write BMS history: {exc}")
 
         for r in bms_readings:
             entry = {"timestamp": r.timestamp, "voltage_v": r.voltage_v,
