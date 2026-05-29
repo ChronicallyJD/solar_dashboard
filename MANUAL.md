@@ -156,7 +156,7 @@ python3 solar_monitor.py --config config.ini
 
 ```bash
 python3 -m unittest discover -s tests -v
-# Expected: 722 tests, 0 failures (runs without BLE hardware or browser)
+# Expected: 765 tests, 0 failures (runs without BLE hardware or browser)
 ```
 
 ---
@@ -699,8 +699,21 @@ ls -la solar_state.json    # watch modification time
 ```bash
 cd /path/to/solar_monitor
 python3 -m unittest discover -s tests -v
-# Expected: 722 tests, 0 failures — no BLE hardware or browser needed
+# Expected: 765 tests, 0 failures — no BLE hardware or browser needed
 ```
+
+**Test files and what they cover:**
+
+| File | Tests | Coverage |
+|---|---|---|
+| `test_solar_monitor.py` | ~150 | JBD/Victron protocol, dashboard cards, aggregate cards, layout |
+| `test_split_process.py` | ~113 | State file I/O, config parsing, MAC/key helpers, `_soc_color`, `_no_card`, query utils |
+| `test_ble_resilience.py` | ~100 | VictronScanner, passive/active fallback, or_patterns, BMS retry |
+| `test_supervisor.py` | ~59 | WorkerSpec, WorkerProcess, crash policy, dashboard loop |
+| `test_console_monitor.py` | ~80 | Rich panels, aggregate display, `_render`, mtime watcher |
+| `test_https_server.py` | ~73 | Cert generation, SSL context, HTTP routing, config |
+| `test_mcp_server.py` | ~107 | All 8 MCP tools, security enforcement, JSON-RPC dispatch |
+| `test_history.py` | ~99 | HistoryDB, schema, purge, retention, dashboard seeding |
 
 ---
 

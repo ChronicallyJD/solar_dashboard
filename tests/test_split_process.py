@@ -53,7 +53,10 @@ from solar_monitor.models import DeviceReading
 from solar_monitor.state import (
     load_state, save_section, _reading_to_dict, _dict_to_reading, _LIST_FIELDS
 )
-from solar_monitor.config import AppConfig, load_config
+from solar_monitor.config import (
+    AppConfig, load_config, parse_mac_key, parse_bms_value, normalise_mac,
+)
+from solar_monitor.dashboard import _soc_color, _no_card
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -839,6 +842,307 @@ class TestTwoProcessWorkflow(unittest.TestCase):
         self.assertIn("755",   html)    # AC out power
         self.assertIn("AC Output L1", html)
         self.assertIn("Battery",      html)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Config parsing helpers — normalise_mac, parse_bms_value, parse_mac_key
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestNormaliseMac(unittest.TestCase):
+    """normalise_mac — accepts all common MAC address formats."""
+
+    def test_colon_separated_uppercase_unchanged(self):
+        self.assertEqual(normalise_mac("AA:BB:CC:DD:EE:FF"), "AA:BB:CC:DD:EE:FF")
+
+    def test_colon_separated_lowercase_uppercased(self):
+        self.assertEqual(normalise_mac("aa:bb:cc:dd:ee:ff"), "AA:BB:CC:DD:EE:FF")
+
+    def test_dash_separated_converted(self):
+        self.assertEqual(normalise_mac("AA-BB-CC-DD-EE-FF"), "AA:BB:CC:DD:EE:FF")
+
+    def test_raw_12_hex_digits_converted(self):
+        self.assertEqual(normalise_mac("AABBCCDDEEFF"), "AA:BB:CC:DD:EE:FF")
+
+    def test_raw_lowercase_12_digits_converted(self):
+        self.assertEqual(normalise_mac("aabbccddeeff"), "AA:BB:CC:DD:EE:FF")
+
+    def test_whitespace_stripped(self):
+        self.assertEqual(normalise_mac("  AA:BB:CC:DD:EE:FF  "), "AA:BB:CC:DD:EE:FF")
+
+
+class TestParseBmsValue(unittest.TestCase):
+    """parse_bms_value — parse BMS config line into (mac, ble_name, password)."""
+
+    def test_mac_with_password(self):
+        mac, name, pw = parse_bms_value("AA:BB:CC:DD:EE:FF : 123456")
+        self.assertEqual(mac, "AA:BB:CC:DD:EE:FF")
+        self.assertIsNone(name)
+        self.assertEqual(pw, "123456")
+
+    def test_mac_without_password(self):
+        mac, name, pw = parse_bms_value("AA:BB:CC:DD:EE:FF")
+        self.assertEqual(mac, "AA:BB:CC:DD:EE:FF")
+        self.assertIsNone(name)
+        self.assertIsNone(pw)
+
+    def test_ble_name_fallback(self):
+        mac, name, pw = parse_bms_value("BT-TH-AABBCC")
+        self.assertIsNone(mac)
+        self.assertEqual(name, "BT-TH-AABBCC")
+        self.assertIsNone(pw)
+
+    def test_whitespace_stripped(self):
+        mac, name, pw = parse_bms_value("  A1:B2:C3:D4:E5:F6 : 000000  ")
+        self.assertEqual(mac, "A1:B2:C3:D4:E5:F6")
+        self.assertEqual(pw, "000000")
+
+    def test_password_is_string(self):
+        _, _, pw = parse_bms_value("AA:BB:CC:DD:EE:FF : 000000")
+        self.assertIsInstance(pw, str)
+
+
+class TestParseMacKey(unittest.TestCase):
+    """parse_mac_key — parse Victron config line into (mac, key, device_type)."""
+
+    def test_mac_key_and_type(self):
+        mac, key, dtype = parse_mac_key(
+            "AA:BB:CC:DD:EE:FF : aabbccddeeff00112233445566778899  type=mppt"
+        )
+        self.assertEqual(mac,   "AA:BB:CC:DD:EE:FF")
+        self.assertEqual(key,   "aabbccddeeff00112233445566778899")
+        self.assertEqual(dtype, "mppt")
+
+    def test_mac_and_key_no_type(self):
+        mac, key, dtype = parse_mac_key(
+            "AA:BB:CC:DD:EE:FF : aabbccddeeff00112233445566778899"
+        )
+        self.assertEqual(mac, "AA:BB:CC:DD:EE:FF")
+        self.assertIsNotNone(key)
+        self.assertIsNone(dtype)
+
+    def test_mac_and_type_no_key(self):
+        mac, key, dtype = parse_mac_key("AA:BB:CC:DD:EE:FF type=inverter")
+        self.assertEqual(mac,   "AA:BB:CC:DD:EE:FF")
+        self.assertIsNone(key)
+        self.assertEqual(dtype, "inverter")
+
+    def test_mac_only(self):
+        mac, key, dtype = parse_mac_key("AA:BB:CC:DD:EE:FF")
+        self.assertEqual(mac, "AA:BB:CC:DD:EE:FF")
+        self.assertIsNone(key)
+        self.assertIsNone(dtype)
+
+    def test_all_type_values_accepted(self):
+        for t in ("mppt", "inverter", "monitor", "dcdc"):
+            _, _, dtype = parse_mac_key(f"AA:BB:CC:DD:EE:FF type={t}")
+            self.assertEqual(dtype, t, f"type={t} not parsed correctly")
+
+    def test_type_lowercased(self):
+        _, _, dtype = parse_mac_key("AA:BB:CC:DD:EE:FF type=MPPT")
+        self.assertEqual(dtype, "mppt")
+
+
+class TestMaxHistoryConfig(unittest.TestCase):
+    """max_history is loaded correctly from [general] section."""
+
+    def test_max_history_loaded_from_ini(self):
+        import tempfile, os
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".ini",
+                                        delete=False, encoding="utf-8")
+        f.write("[general]\nmax_history = 1200\n")
+        f.close()
+        try:
+            cfg = load_config(f.name)
+            self.assertEqual(cfg.max_history, 1200)
+        finally:
+            os.unlink(f.name)
+
+    def test_max_history_default_when_absent(self):
+        import tempfile, os
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".ini",
+                                        delete=False, encoding="utf-8")
+        f.write("[general]\n")
+        f.close()
+        try:
+            cfg = load_config(f.name)
+            self.assertIsInstance(cfg.max_history, int)
+            self.assertGreater(cfg.max_history, 0)
+        finally:
+            os.unlink(f.name)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dashboard helpers — _soc_color, _no_card
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSocColor(unittest.TestCase):
+    """_soc_color — returns correct CSS variable string for each SoC band."""
+
+    def test_full_charge_is_green(self):
+        self.assertEqual(_soc_color(100), "var(--green)")
+
+    def test_boundary_60_is_green(self):
+        self.assertEqual(_soc_color(60), "var(--green)")
+
+    def test_boundary_59_is_amber(self):
+        self.assertEqual(_soc_color(59), "var(--amber)")
+
+    def test_boundary_30_is_amber(self):
+        self.assertEqual(_soc_color(30), "var(--amber)")
+
+    def test_boundary_29_is_red(self):
+        self.assertEqual(_soc_color(29), "var(--red)")
+
+    def test_zero_is_red(self):
+        self.assertEqual(_soc_color(0), "var(--red)")
+
+    def test_returns_string(self):
+        self.assertIsInstance(_soc_color(50), str)
+
+
+class TestNoCard(unittest.TestCase):
+    """_no_card — returns a styled placeholder div."""
+
+    def test_contains_message(self):
+        html = _no_card("No devices found")
+        self.assertIn("No devices found", html)
+
+    def test_is_valid_html_fragment(self):
+        html = _no_card("test")
+        self.assertIn("<div", html)
+        self.assertIn("</div>", html)
+
+    def test_uses_no_card_class(self):
+        html = _no_card("test")
+        self.assertIn("no-card", html)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Query utility helpers — _resolve_date, _print_table
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestResolveDate(unittest.TestCase):
+    """_resolve_date — resolve date shortcuts to ISO date strings."""
+
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "query_history", "/home/claude/utils/query_history.py"
+        )
+        self.qh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.qh)
+
+    def test_today_resolves_to_todays_date(self):
+        from datetime import date
+        result = self.qh._resolve_date("today")
+        self.assertEqual(result, date.today().isoformat())
+
+    def test_yesterday_resolves_to_yesterdays_date(self):
+        from datetime import date, timedelta
+        result = self.qh._resolve_date("yesterday")
+        self.assertEqual(result, (date.today() - timedelta(days=1)).isoformat())
+
+    def test_iso_date_passed_through(self):
+        self.assertEqual(self.qh._resolve_date("2024-01-15"), "2024-01-15")
+
+    def test_iso_datetime_passed_through(self):
+        self.assertEqual(self.qh._resolve_date("2024-01-15T08:30:00"),
+                         "2024-01-15T08:30:00")
+
+    def test_case_insensitive_today(self):
+        from datetime import date
+        self.assertEqual(self.qh._resolve_date("TODAY"), date.today().isoformat())
+
+    def test_case_insensitive_yesterday(self):
+        from datetime import date, timedelta
+        self.assertEqual(self.qh._resolve_date("YESTERDAY"),
+                         (date.today() - timedelta(days=1)).isoformat())
+
+
+class TestPrintTable(unittest.TestCase):
+    """_print_table — renders a human-readable table to stdout."""
+
+    def setUp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "query_history", "/home/claude/utils/query_history.py"
+        )
+        self.qh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.qh)
+        self.rows = [
+            {"recorded_at": "2024-01-15T08:00:00", "device_name": "House Bank",
+             "device_type": "bms", "voltage_v": 54.32, "capacity_pct": 84,
+             "current_a": -10.0, "power_w": -543.2, "pv_power_w": None,
+             "error": None},
+        ]
+
+    def _capture(self, rows, max_rows=40):
+        import io
+        from contextlib import redirect_stdout
+        f = io.StringIO()
+        with redirect_stdout(f):
+            self.qh._print_table(rows, max_rows)
+        return f.getvalue()
+
+    def test_contains_device_name(self):
+        out = self._capture(self.rows)
+        self.assertIn("House Bank", out)
+
+    def test_contains_voltage(self):
+        out = self._capture(self.rows)
+        self.assertIn("54.32", out)
+
+    def test_empty_rows_no_crash(self):
+        out = self._capture([])
+        self.assertIn("no results", out.lower())
+
+    def test_max_rows_limit_respected(self):
+        many_rows = self.rows * 50
+        out = self._capture(many_rows, max_rows=5)
+        # Should mention truncation
+        self.assertIn("more rows", out.lower())
+
+    def test_outputs_header_row(self):
+        out = self._capture(self.rows)
+        lines = [l for l in out.splitlines() if l.strip()]
+        # First line should be column headers
+        self.assertIn("device_name", lines[0])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BLE scanner — OrPattern import path
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestOrPatternImport(unittest.TestCase):
+    """scan() must attempt the OrPattern import path for bleak >= 0.21."""
+
+    def _scanner_src(self):
+        with open("/home/claude/solar_monitor/scanner.py") as f:
+            return f.read()
+
+    def test_or_pattern_import_attempted(self):
+        """scan() source must try to import OrPattern for bleak >= 0.21."""
+        src = self._scanner_src()
+        self.assertIn("OrPattern", src,
+                      "scan() must attempt OrPattern import for bleak >= 0.21")
+
+    def test_or_pattern_import_inside_try_block(self):
+        """OrPattern import must be in a try/except so older bleak still works."""
+        src = self._scanner_src()
+        # Find the try block containing OrPattern
+        try_idx     = src.find("try:")
+        orpat_idx   = src.find("OrPattern")
+        except_idx  = src.find("except ImportError", try_idx)
+        self.assertGreater(orpat_idx, try_idx,
+                           "OrPattern must be inside a try block")
+        self.assertGreater(except_idx, orpat_idx,
+                           "ImportError except must follow OrPattern import")
+
+    def test_fallback_tuple_format_present(self):
+        """Tuple-format or_patterns must be present as fallback for bleak <= 0.20."""
+        src = self._scanner_src()
+        self.assertIn("(0, 0xFF,", src,
+                      "Tuple-format or_patterns must be present for bleak <= 0.20")
 
 
 if __name__ == "__main__":

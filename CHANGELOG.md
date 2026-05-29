@@ -230,7 +230,13 @@ auto_cert = true
 ---
 
 ### Test suite
-- **722 tests**, all passing, no BLE hardware or browser required
+- **765 tests**, all passing, no BLE hardware or browser required
+- Tests added / extended this audit:
+  - `normalise_mac`, `parse_bms_value`, `parse_mac_key` — config parsing helpers
+  - `_soc_color`, `_no_card` — dashboard utility functions
+  - `_resolve_date`, `_print_table` — query utility helpers
+  - `max_history` INI key loading
+  - `OrPattern` import path and fallback in `VictronScanner.scan()`
 - New test files:
   - `tests/test_supervisor.py` — WorkerSpec, WorkerProcess, crash policy, dashboard loop, config detection (59 tests)
   - `tests/test_console_monitor.py` — utility functions, all panels, `_render`, `_mtime` (80 tests)
