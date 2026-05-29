@@ -23,6 +23,7 @@
 15. [HTTPS Dashboard Server](#15-https-dashboard-server)
 16. [MCP Server](#16-mcp-server)
 17. [Historical Data & SQLite Storage](#17-historical-data--sqlite-storage)
+18. [Utils — Management Utilities](#18-utils--management-utilities)
 
 ---
 
@@ -106,18 +107,24 @@ solar_monitor/
 ├── bms_monitor.py          ← BMS worker (can run standalone)
 ├── victron_monitor.py      ← Victron worker (can run standalone)
 ├── console_monitor.py      ← Rich terminal dashboard (read-only)
+├── mcp_server.py           ← MCP server for AI assistant integration
 ├── jbd_bms_monitor.py      ← Combined legacy launcher
 ├── config.ini.example      ← Annotated configuration template
 ├── MANUAL.md               ← This file
 ├── solar_monitor/          ← Python package
-│   ├── scanner.py
-│   ├── jbd.py
-│   ├── victron.py
-│   ├── dashboard.py
-│   ├── state.py
-│   ├── config.py
-│   └── models.py
-└── tests/                  ← 443 unit tests
+│   ├── scanner.py          ← BLE scanning, VictronScanner
+│   ├── jbd.py              ← JBD/Vatrer BMS protocol
+│   ├── victron.py          ← Victron BLE protocol and parsers
+│   ├── dashboard.py        ← HTML dashboard generation
+│   ├── state.py            ← Atomic JSON state file I/O
+│   ├── config.py           ← AppConfig, INI loading
+│   ├── models.py           ← DeviceReading dataclass
+│   ├── server.py           ← HTTPS server, cert generation
+│   └── history.py          ← SQLite persistent history store
+├── utils/                  ← Server-side management utilities
+│   ├── purge_history.py    ← Delete history by date range / device
+│   └── query_history.py    ← Query and export history as CSV / JSON
+└── tests/                  ← 765 unit tests
 ```
 
 ### 3.2 Install Python dependencies
@@ -2332,3 +2339,288 @@ monitor after the first poll cycle.
 SQLite WAL mode (used by default) typically handles hundreds of inserts per
 second. If writes are slow, check that the database is on a local filesystem
 (not NFS or a network share) and that the disk is not full.
+
+---
+
+## 18. Utils — Management Utilities
+
+The `utils/` directory contains server-side management scripts for the Solar
+Monitor database and data pipeline. All utilities are standalone Python scripts
+that can be run directly from the repository root without any installation
+step beyond the project's existing dependencies.
+
+**Convention:** every utility accepts `--config` to read the project config
+file, and `--db` to override the database path directly. Both run against
+whichever database is configured in `[history] db_path`.
+
+```
+utils/
+├── __init__.py             ← makes utils/ a package (enables imports)
+├── purge_history.py        ← delete readings by date range, device, or type
+└── query_history.py        ← query and export readings as CSV or JSON
+```
+
+---
+
+### 18.1 `purge_history.py` — delete historical data
+
+Deletes readings from the SQLite history database. Always requires at least
+one filter to prevent accidental full-table deletion. Prompts for confirmation
+before deleting unless `--yes` is supplied.
+
+#### Usage
+
+```
+python utils/purge_history.py [OPTIONS]
+```
+
+#### Options
+
+**Database selection:**
+
+| Option | Description |
+|---|---|
+| `--config FILE` | Config file to read `[history] db_path` from (default: `config.ini`) |
+| `--db FILE` | Override database path directly, bypassing config |
+
+**Filters** (AND logic — any combination):
+
+| Option | Description |
+|---|---|
+| `--before DATE` | Delete rows where `recorded_at < DATE` |
+| `--after DATE` | Delete rows where `recorded_at > DATE` |
+| `--device NAME` | Restrict deletion to this device name (exact, case-sensitive) |
+| `--type TYPE` | Restrict to device type: `bms`, `mppt`, `inverter`, `monitor`, `dcdc`, `meter` |
+
+**Actions:**
+
+| Option | Description |
+|---|---|
+| `--enforce-retention` | Delete all rows older than `retention_days` from config |
+| `--vacuum` | Run `VACUUM` after deletion to compact the database file |
+| `--dry-run` | Count matching rows without deleting — always safe to run |
+| `--yes` / `-y` | Skip the confirmation prompt (for scripted / cron use) |
+
+**Inspection:**
+
+| Option | Description |
+|---|---|
+| `--stats` | Show row count, date range, and database size, then exit |
+| `--list-devices` | List all devices with first/last seen dates and row counts, then exit |
+
+#### Examples
+
+```bash
+# Always inspect first
+python utils/purge_history.py --config config.ini --stats
+python utils/purge_history.py --config config.ini --list-devices
+
+# Dry run — see what would be deleted without deleting anything
+python utils/purge_history.py --config config.ini \
+    --before 2023-01-01 --dry-run
+
+# Delete all data older than 1 January 2023
+python utils/purge_history.py --config config.ini \
+    --before 2023-01-01
+
+# Delete a specific bad-data window (e.g. sensor was misconfigured)
+python utils/purge_history.py --config config.ini \
+    --after 2024-03-01 --before 2024-03-05
+
+# Remove a decommissioned device completely
+python utils/purge_history.py --config config.ini \
+    --device "Old Pack"
+
+# Delete only BMS readings before a date, keep Victron data
+python utils/purge_history.py --config config.ini \
+    --type bms --before 2023-06-01
+
+# Delete one specific device's data from one specific window
+python utils/purge_history.py --config config.ini \
+    --device "House Bank" --after 2024-06-01 --before 2024-06-30
+
+# Apply the configured retention policy immediately
+python utils/purge_history.py --config config.ini \
+    --enforce-retention
+
+# Apply retention then compact the file (reclaims disk space)
+python utils/purge_history.py --config config.ini \
+    --enforce-retention --vacuum
+
+# Non-interactive use in a cron job (no confirmation prompt)
+python utils/purge_history.py --config config.ini \
+    --before 2023-01-01 --yes
+
+# Point directly at a database file without a config
+python utils/purge_history.py --db /data/solar_history.db \
+    --before 2023-01-01 --dry-run
+```
+
+#### Cron example
+
+```cron
+# Apply retention policy every Sunday at 03:00, then vacuum
+0 3 * * 0 cd /home/pi/solar_monitor && \
+  python utils/purge_history.py --config config.ini \
+  --enforce-retention --vacuum --yes >> /var/log/solar_purge.log 2>&1
+```
+
+---
+
+### 18.2 `query_history.py` — query and export data
+
+Reads the SQLite history database and outputs results as a terminal table,
+CSV, or JSON. Designed for data exploration, trend analysis, and integration
+with external tools (spreadsheets, Grafana, Home Assistant, etc.).
+
+#### Usage
+
+```
+python utils/query_history.py [OPTIONS]
+```
+
+#### Options
+
+**Database selection:**
+
+| Option | Description |
+|---|---|
+| `--config FILE` | Config file to read `[history] db_path` from (default: `config.ini`) |
+| `--db FILE` | Override database path directly |
+
+**Filters:**
+
+| Option | Description |
+|---|---|
+| `--device NAME` | Filter by device name (exact match, case-sensitive) |
+| `--type TYPE` | Filter by device type: `bms`, `mppt`, `inverter`, `monitor`, `dcdc`, `meter` |
+| `--start DATE` | Earliest `recorded_at` to include. Accepts `today`, `yesterday`, or ISO date/datetime |
+| `--end DATE` | Latest `recorded_at` to include (inclusive). Same date shortcuts accepted |
+| `--limit N` | Maximum number of rows to return |
+| `--order asc\|desc` | Sort order: `asc` = oldest first (default), `desc` = newest first |
+
+**Output:**
+
+| Option | Values | Description |
+|---|---|---|
+| `--format` | `table` (default), `csv`, `json` | Output format. `csv` and `json` go to stdout |
+| `--fields col1,col2,...` | Any column names | Restrict output to specific columns |
+
+**Inspection:**
+
+| Option | Description |
+|---|---|
+| `--stats` | Show database statistics (row count, date range, size) and exit |
+| `--list-devices` | List all devices with first/last seen and row count, then exit |
+| `--list-fields` | Print all available column names and exit |
+
+#### Available fields
+
+Use `--list-fields` to print the full list. Key fields:
+
+| Field | Description |
+|---|---|
+| `recorded_at` | UTC timestamp when the reading was stored |
+| `device_name` | Device display label |
+| `device_type` | `bms`, `mppt`, `inverter`, `monitor`, etc. |
+| `voltage_v` | DC battery/pack voltage |
+| `current_a` | DC current (negative = discharging) |
+| `power_w` | DC power |
+| `capacity_pct` | State of charge 0–100% (BMS) |
+| `remain_wh` | Energy remaining (BMS) |
+| `pv_power_w` | PV input power (MPPT) |
+| `yield_today_wh` | Energy harvested today (MPPT) |
+| `charger_state` | Charger state (MPPT) |
+| `ac_out_power_va` | AC output power (inverter) |
+| `inverter_state` | Device state (inverter) |
+| `temp_c` | Temperature readings, JSON array |
+| `faults` | Active fault names, JSON array |
+
+#### Examples
+
+```bash
+# Show recent readings in a terminal table (newest 20 rows)
+python utils/query_history.py --config config.ini \
+    --limit 20 --order desc
+
+# Show all available column names
+python utils/query_history.py --config config.ini --list-fields
+
+# List all devices in the database
+python utils/query_history.py --config config.ini --list-devices
+
+# Export a device's full history as CSV
+python utils/query_history.py --config config.ini \
+    --device "House Bank" --format csv > house_bank.csv
+
+# Export only key fields — smaller file, faster to open in a spreadsheet
+python utils/query_history.py --config config.ini \
+    --device "House Bank" \
+    --fields recorded_at,voltage_v,current_a,capacity_pct,remain_wh \
+    --format csv > house_bank_soc.csv
+
+# Export a specific date range as JSON
+python utils/query_history.py --config config.ini \
+    --start 2024-01-01 --end 2024-01-31 --format json
+
+# Today's MPPT data
+python utils/query_history.py --config config.ini \
+    --type mppt --start today \
+    --fields recorded_at,device_name,pv_power_w,yield_today_wh
+
+# All inverter readings for a specific month as CSV
+python utils/query_history.py --config config.ini \
+    --type inverter --start 2024-06-01 --end 2024-06-30 --format csv
+
+# Last 100 BMS readings, newest first
+python utils/query_history.py --config config.ini \
+    --type bms --limit 100 --order desc
+
+# Database statistics
+python utils/query_history.py --config config.ini --stats
+```
+
+#### Piping and integration
+
+```bash
+# Feed into Python for quick analysis
+python utils/query_history.py --config config.ini \
+    --device "House Bank" --format json | \
+  python3 -c "
+import json, sys
+rows = json.load(sys.stdin)
+socs = [r['capacity_pct'] for r in rows if r.get('capacity_pct')]
+print(f'Average SoC: {sum(socs)/len(socs):.1f}%  Min: {min(socs)}%  Max: {max(socs)}%')
+"
+
+# Open in Pandas
+python utils/query_history.py --config config.ini \
+    --format csv > /tmp/history.csv
+python3 -c "
+import pandas as pd
+df = pd.read_csv('/tmp/history.csv', parse_dates=['recorded_at'])
+print(df.groupby('device_name')['capacity_pct'].describe())
+"
+```
+
+---
+
+### 18.3 Adding new utilities
+
+Any Python script placed in `utils/` and following the same conventions
+(reading from `--config`, using `HistoryDB` or `load_state` from the package)
+integrates naturally with the rest of the project.
+
+The `utils/__init__.py` file makes the directory importable as a Python
+package, so utilities can share helper code:
+
+```python
+# In a new utility
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from solar_monitor.history import HistoryDB, load_history_config
+from solar_monitor.state import load_state
+from solar_monitor.config import load_config
+```
