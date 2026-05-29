@@ -21,3 +21,11 @@ theme = business
 # cert_file = server.crt
 # key_file = server.key
 # auto_cert = true
+
+[mcp]
+# enabled       = true
+# api_key       =
+# allowed_tools =
+# rate_limit    = 60
+# require_local = true
+# log_requests  = false

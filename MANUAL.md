@@ -21,6 +21,7 @@
 13. [Troubleshooting](#13-troubleshooting)
 14. [Reference](#14-reference)
 15. [HTTPS Dashboard Server](#15-https-dashboard-server)
+16. [MCP Server](#16-mcp-server)
 
 ---
 
@@ -64,6 +65,7 @@ live Rich terminal dashboard. No cloud, no app, no internet access required.
 - **bleak** ≥ 0.20 — BLE library (required)
 - **cryptography** — Victron AES-128-CTR decryption (required)
 - **rich** — terminal dashboard (optional; only needed for `console_monitor.py`)
+- **No extra dependencies for MCP** — `mcp_server.py` uses only the standard library
 
 ```bash
 pip install bleak cryptography       # required
@@ -153,7 +155,7 @@ python3 solar_monitor.py --config config.ini
 
 ```bash
 python3 -m unittest discover -s tests -v
-# Expected: 516 tests, 0 failures (runs without BLE hardware or browser)
+# Expected: 623 tests, 0 failures (runs without BLE hardware or browser)
 ```
 
 ---
@@ -696,7 +698,7 @@ ls -la solar_state.json    # watch modification time
 ```bash
 cd /path/to/solar_monitor
 python3 -m unittest discover -s tests -v
-# Expected: 516 tests, 0 failures — no BLE hardware or browser needed
+# Expected: 623 tests, 0 failures — no BLE hardware or browser needed
 ```
 
 ---
@@ -753,6 +755,8 @@ python3 -m unittest discover -s tests -v
 | `tests/test_supervisor.py` | Supervisor: WorkerSpec, WorkerProcess tests |
 | `tests/test_console_monitor.py` | Rich console dashboard tests |
 | `tests/test_https_server.py` | HTTPS server, cert, routing, config tests |
+| `mcp_server.py` | MCP server — AI assistant integration, 8 tools |
+| `tests/test_mcp_server.py` | MCP server: tools, security, dispatch tests |
 
 ### 14.4 Config quick reference
 
@@ -772,6 +776,14 @@ Label = MAC [ : password ]
 
 [victron]
 Label = MAC : 32-char-key  [ type=mppt|inverter|monitor|dcdc ]
+
+[mcp]
+enabled       = true            # start MCP server
+api_key       =                 # bearer token (empty = no auth)
+allowed_tools =                 # comma-separated whitelist (empty = all)
+rate_limit    = 60              # requests/minute (0 = unlimited)
+require_local = true            # loopback only (stdio: informational)
+log_requests  = false           # log every tool call to stderr
 ```
 
 ### 14.5 Victron record types
@@ -1463,3 +1475,520 @@ while True:
 
     time.sleep(30)
 ```
+
+---
+
+## 16. MCP Server
+
+Solar Monitor includes a Model Context Protocol (MCP) server that exposes
+live solar data directly to AI assistants — Claude Desktop, Cursor, and any
+other MCP-compatible client. Ask natural-language questions about your system
+without leaving the AI interface.
+
+**Example conversations:**
+
+> *"What's my total PV power right now?"*
+> *"Are there any battery faults I should know about?"*
+> *"How long until House Bank runs out at the current draw?"*
+> *"Which charger has produced the most yield today?"*
+
+---
+
+### 16.1 How it works
+
+The MCP server uses the **stdio transport** — it runs as a subprocess launched
+directly by the AI client, communicating over stdin/stdout using
+[JSON-RPC 2.0](https://www.jsonrpc.org/specification). No port, no TLS, no
+network socket. The server reads the shared state file (`solar_state.json`)
+on every tool call, so responses always reflect the latest poll data.
+
+**No additional Python packages required.** The server uses only the
+standard library plus the existing `solar_monitor` package.
+
+---
+
+### 16.2 Installation — Claude Desktop
+
+1. Locate or create Claude Desktop's config file:
+
+   | Platform | Path |
+   |---|---|
+   | macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+   | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+   | Linux | `~/.config/claude/claude_desktop_config.json` |
+
+2. Add the `solar-monitor` entry:
+
+```json
+{
+  "mcpServers": {
+    "solar-monitor": {
+      "command": "python3",
+      "args": [
+        "/home/pi/solar_monitor/mcp_server.py",
+        "--config", "/home/pi/solar_monitor/config.ini"
+      ]
+    }
+  }
+}
+```
+
+3. Restart Claude Desktop. A solar panel icon appears in the tool bar when
+   the server connects successfully.
+
+**Verifying the connection:**
+
+```bash
+# Test the server manually — type a request and press Enter
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | \
+  python3 mcp_server.py --config config.ini
+```
+
+You should see a JSON response containing `"name": "solar-monitor"`.
+
+---
+
+### 16.3 Configuration
+
+All settings live in the `[mcp]` section of `config.ini`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Enable the MCP server. Set `false` to prevent startup. |
+| `api_key` | string | `""` | Shared secret required in every `tools/call`. Empty = no auth. |
+| `allowed_tools` | list | `""` | Comma-separated tool whitelist. Empty = all tools exposed. |
+| `rate_limit` | integer | `60` | Maximum `tools/call` requests per minute. `0` = unlimited. |
+| `require_local` | bool | `true` | Documents intent (stdio is inherently local; no enforcement needed). |
+| `log_requests` | bool | `false` | Log every tool call to stderr for auditing. |
+
+**`read_only` is always `true`** — the server never writes to the state file
+or any other file. This is a guarantee, not a configuration option.
+
+**Example `[mcp]` section:**
+
+```ini
+[mcp]
+
+# Enable the MCP server (Claude Desktop starts it as a subprocess)
+enabled = true
+
+# Require a shared secret in every tool call.
+# In Claude Desktop, include this in a system prompt or set in the MCP client config.
+# Leave empty to disable authentication (fine for local-only use).
+api_key =
+
+# Restrict which tools are visible and callable.
+# Empty means all 8 tools are available.
+# Useful if you want to limit an assistant to read-only aggregate views only.
+allowed_tools =
+
+# Maximum tool calls per minute. Prevents runaway loops in automated agents.
+rate_limit = 60
+
+# Informational — stdio is always local; no network enforcement possible.
+require_local = true
+
+# Set to true to log every tool call name and arguments to stderr.
+# Captured by Claude Desktop in its diagnostic logs.
+log_requests = false
+```
+
+---
+
+### 16.4 Available tools
+
+The MCP server exposes eight read-only tools. All return structured JSON.
+
+---
+
+#### `get_system_status`
+
+High-level system summary — one number per energy flow. Best starting point
+for an assistant that needs a quick overview.
+
+**No arguments.**
+
+**Returns:**
+
+```json
+{
+  "solar": {
+    "total_pv_w":     680.0,
+    "yield_today_wh": 3200.0,
+    "mppt_online":    2,
+    "mppt_total":     2
+  },
+  "inverter": {
+    "total_ac_out_w":   755.0,
+    "inverters_online": 1,
+    "inverters_total":  1
+  },
+  "battery": {
+    "avg_soc_pct":     84,
+    "total_remain_wh": 9125.8,
+    "net_current_a":   -15.0,
+    "packs_online":    2,
+    "packs_total":     2,
+    "charging":        false,
+    "discharging":     true
+  },
+  "alerts": {
+    "active_faults":   [],
+    "offline_devices": [],
+    "alarms":          []
+  },
+  "data_age": {
+    "bms_updated":     "2024-01-15T08:15:42",
+    "victron_updated": "2024-01-15T08:15:11"
+  }
+}
+```
+
+---
+
+#### `get_battery_status`
+
+Detailed status of every JBD/Vatrer BMS battery pack. Includes SoC, energy
+remaining, estimated runtime, active faults, and cell balancing.
+
+**No arguments.**
+
+**Returns:** `packs` array (one object per pack) + `summary`.
+
+Each pack object:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Display label from config |
+| `address` | string | Bluetooth MAC |
+| `online` | boolean | `false` if last poll failed |
+| `soc_pct` | integer | State of charge 0–100% |
+| `voltage_v` | string | Pack voltage (e.g. `"54.32"`) |
+| `current_a` | string | Signed current — negative = discharging |
+| `power_w` | string | DC power |
+| `remain_wh` | string | Energy remaining |
+| `remain_ah` | string | Capacity remaining |
+| `nominal_ah` | string | Design capacity |
+| `time_to_empty` | string or null | e.g. `"5h36m"`, null if charging |
+| `time_to_full` | string or null | e.g. `"1h12m"`, null if discharging |
+| `cell_count` | integer | Cells in series |
+| `cycle_count` | integer | Full charge cycles |
+| `temperatures_c` | array | NTC sensor readings |
+| `faults` | array | Active fault names (empty = healthy) |
+| `balancing_cells` | array | 1-indexed cell numbers actively balancing |
+| `charge_fet` | boolean | Charge MOSFET enabled |
+| `discharge_fet` | boolean | Discharge MOSFET enabled |
+| `firmware` | string | BMS firmware version |
+| `error` | string | Error message when `online: false` |
+
+---
+
+#### `get_solar_status`
+
+Status of all Victron SmartSolar MPPT charge controllers.
+
+**No arguments.**
+
+**Returns:** `chargers` array + `summary` with `total_pv_w` and `total_yield_wh`.
+
+Each charger object:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Display label |
+| `pv_power_w` | string | Current PV input power |
+| `yield_today_wh` | string | Energy harvested since midnight |
+| `battery_v` | string | Battery output voltage |
+| `battery_a` | string | Battery output current |
+| `charger_state` | string | `"Off"`, `"Bulk"`, `"Absorption"`, `"Float"`, etc. |
+| `load_a` | string or null | Load terminal current (if present) |
+
+---
+
+#### `get_inverter_status`
+
+Status of all Victron inverters and VE.Bus Smart Dongles (MultiPlus, etc.).
+
+**No arguments.**
+
+**Returns:** `inverters` array + `summary` with `any_alarms` and `total_ac_out_w`.
+
+Each inverter object:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Display label |
+| `state` | string | `"Inverting"`, `"Passthrough"`, `"Charging"`, etc. |
+| `ac_out_w` | string | AC output real power (W) |
+| `ac_in_source` | string | `"AC1"`, `"AC2"`, `"Not connected"` |
+| `ac_in_power_w` | string | AC input power from grid |
+| `battery_v` | string | DC bus voltage |
+| `battery_a` | string | DC current (negative = discharging) |
+| `temperature_c` | float | Dongle temperature sensor |
+| `alarm` | string or null | Alarm level, null when none |
+| `vebus_error` | integer or null | VE.Bus error code (null or 0 = ok) |
+
+---
+
+#### `get_device`
+
+All available data for a single device, identified by name or MAC address.
+
+**Arguments:**
+
+| Argument | Type | Description |
+|---|---|---|
+| `name_or_address` | string | Device name (e.g. `"House Bank"`) or MAC (`"AA:BB:CC:DD:EE:FF"`). Case-insensitive. |
+
+**Returns:**
+
+```json
+{
+  "found":   true,
+  "query":   "House Bank",
+  "devices": [ { ...full DeviceReading object... } ]
+}
+```
+
+`found: false` when no device matches. `devices` may contain multiple
+entries if devices share a name — prefer MAC for precision.
+
+---
+
+#### `list_devices`
+
+All configured devices with type, online status, and a key metric.
+Use this to discover available devices before querying specific ones.
+
+**No arguments.**
+
+**Returns:**
+
+```json
+{
+  "devices": [
+    {
+      "name":         "House Bank",
+      "address":      "A1:B2:C3:D4:E5:F6",
+      "type":         "bms",
+      "online":       true,
+      "soc_pct":      84,
+      "last_updated": "2024-01-15T08:15:42"
+    },
+    {
+      "name":         "South Array",
+      "type":         "mppt",
+      "online":       true,
+      "pv_power_w":   "680.0"
+    },
+    {
+      "name":         "MultiPlus",
+      "type":         "inverter",
+      "online":       true,
+      "ac_out_w":     "755",
+      "state":        "Inverting"
+    }
+  ],
+  "counts": {
+    "total":   3,
+    "online":  3,
+    "offline": 0
+  }
+}
+```
+
+---
+
+#### `get_alerts`
+
+Active alerts across the entire system. Returns `all_clear: true` when
+everything is healthy — useful for polling.
+
+**No arguments.**
+
+**Returns:**
+
+```json
+{
+  "all_clear": false,
+  "offline": [
+    { "name": "West Array", "type": "mppt", "error": "Device not seen during scan" }
+  ],
+  "battery_faults": [
+    { "name": "House Bank", "fault": "Cell overvoltage" }
+  ],
+  "inverter_alarms": [],
+  "summary": "1 device(s) offline; 1 active fault(s)"
+}
+```
+
+When healthy:
+```json
+{ "all_clear": true, "offline": [], "battery_faults": [], "inverter_alarms": [],
+  "summary": "All systems nominal." }
+```
+
+**Fault names** that can appear in `battery_faults`:
+
+`Cell overvoltage`, `Cell undervoltage`, `Pack overvoltage`, `Pack undervoltage`,
+`Charge overtemp`, `Charge undertemp`, `Discharge overtemp`, `Discharge undertemp`,
+`Charge overcurrent`, `Discharge overcurrent`, `Short circuit`, `IC error`, `MOS lock`
+
+---
+
+#### `get_data_age`
+
+How recently each data section was last updated. Use before relying on
+readings to confirm they are fresh.
+
+**No arguments.**
+
+**Returns:**
+
+```json
+{
+  "bms": {
+    "last_updated": "2024-01-15T08:15:42",
+    "age":          "45s ago",
+    "readings":     2
+  },
+  "victron": {
+    "last_updated": "2024-01-15T08:15:11",
+    "age":          "2m ago",
+    "readings":     2
+  },
+  "stale": {
+    "bms":     false,
+    "victron": false
+  }
+}
+```
+
+`stale: true` when `last_updated` is `null` (no poll has completed).
+`age` format: `"45s ago"`, `"3m ago"`, `"1.5h ago"`.
+
+---
+
+### 16.5 Security model
+
+**Authentication — `api_key`**
+
+When `api_key` is set, every `tools/call` must include it as an argument:
+
+```json
+{
+  "name": "get_system_status",
+  "arguments": { "api_key": "your-secret-key" }
+}
+```
+
+Wrong or missing key returns JSON-RPC error `-32001` (Unauthorized).
+The key is stripped from arguments before reaching any tool function —
+tools never see it.
+
+With Claude Desktop, inject the key via a system prompt:
+*"When using solar-monitor tools, always include `api_key: your-secret` in arguments."*
+
+**Tool whitelisting — `allowed_tools`**
+
+When set, only listed tools appear in `tools/list` and can be called via
+`tools/call`. Attempting to call an unlisted tool returns error `-32002` (Forbidden).
+This lets you restrict a general-purpose assistant to only summary views:
+
+```ini
+allowed_tools = get_system_status, get_alerts, list_devices
+```
+
+**Rate limiting — `rate_limit`**
+
+Sliding 60-second window. When exceeded, returns error `-32000` with a
+message advising the caller to retry. Protects against runaway loops in
+automated agents. Set `rate_limit = 0` to disable.
+
+**Read-only guarantee**
+
+The MCP server never writes to the state file, dashboard, certificates, or
+any other file on disk. This is hardcoded and not configurable.
+
+**Transport security**
+
+The stdio transport is inherently local — only a process on the same machine
+running as the same user can access it. There is no network socket to firewall.
+
+---
+
+### 16.6 Error codes
+
+All errors follow JSON-RPC 2.0. Custom codes in the `-32000` to `-32099` range:
+
+| Code | Name | Meaning |
+|---|---|---|
+| `-32700` | Parse Error | Request is not valid JSON |
+| `-32600` | Invalid Request | Not a valid JSON-RPC object |
+| `-32601` | Method Not Found | Unknown method or tool name |
+| `-32602` | Invalid Params | Wrong or missing arguments for a tool |
+| `-32603` | Internal Error | Tool raised an unhandled exception |
+| `-32000` | Rate Limited | Too many requests per minute |
+| `-32001` | Unauthorized | Missing or wrong `api_key` |
+| `-32002` | Forbidden | Tool not in `allowed_tools` whitelist |
+
+---
+
+### 16.7 Troubleshooting
+
+**Server doesn't appear in Claude Desktop**
+
+- Check the path in `claude_desktop_config.json` is absolute and correct
+- Verify Python is at the path specified (`which python3`)
+- Run the server manually and check stderr:
+  ```bash
+  python3 mcp_server.py --config config.ini --log-level DEBUG
+  ```
+  Then type `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` and press Enter.
+
+**`MCP server is disabled`**
+
+Set `enabled = true` in `[mcp]` section of `config.ini`.
+
+**Tools return stale data**
+
+Check `get_data_age` — if `stale: true`, the supervisor workers haven't completed
+a poll. Check that `solar_monitor.py` is running and the state file is being updated:
+```bash
+ls -la solar_state.json    # watch mtime
+```
+
+**`Unauthorized` error on every call**
+
+`api_key` is set in config but not being passed in arguments. Either clear `api_key`
+for local use, or ensure your MCP client includes it in every request.
+
+**`Rate Limited` on every call**
+
+Reduce polling frequency or increase `rate_limit`. For interactive use,
+`rate_limit = 0` (unlimited) is safe since a human cannot saturate 60/min manually.
+
+**Config file not found warning at startup**
+
+The server falls back to defaults (no auth, all tools, 60/min) and continues.
+Specify the correct path with `--config`:
+```bash
+python3 mcp_server.py --config /absolute/path/to/config.ini
+```
+
+---
+
+### 16.8 Command-line reference
+
+```
+python3 mcp_server.py [OPTIONS]
+
+Options:
+  --config FILE       Config file path (reads [mcp] and state_file from [general])
+                      Default: config.ini in the current directory
+  --state-file FILE   Override state file path from config
+  --log-level LEVEL   DEBUG / INFO / WARNING / ERROR  (default: INFO)
+  -h, --help          Show help and Claude Desktop config example
+```
+
+All log output goes to **stderr**. Stdout is reserved for JSON-RPC messages.
