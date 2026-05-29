@@ -1146,11 +1146,14 @@ class TestDashboardLayout(unittest.TestCase):
         pos_ind     = self.html.index("MPPT Chargers — Individual")
         self.assertLess(pos_agg, pos_ind, "Aggregates must come before individual cards")
 
-    def test_agg_cards_flex_nowrap_css(self):
-        self.assertIn("flex-wrap:nowrap", self.html)
+    def test_agg_cards_responsive_css(self):
+        # Mobile-first: stacks vertically, then side-by-side at 600px breakpoint
+        self.assertIn("flex-direction:column", self.html)
+        self.assertIn("min-width:600px", self.html)
 
-    def test_agg_cards_min_width(self):
-        self.assertIn("min-width:260px", self.html)
+    def test_agg_cards_min_width_breakpoint(self):
+        # Agg cards use flex:1 1 220px at 600px breakpoint
+        self.assertIn("220px", self.html)
 
     def test_html_is_valid_string(self):
         self.assertIn("<!DOCTYPE html>", self.html)
