@@ -127,6 +127,9 @@ class DeviceConfig:
     device_type: Optional[str]   = None  # explicit type override: "mppt"|"inverter"|"monitor"|"dcdc"
 
 
+from .server import ServerConfig
+
+
 @dataclass
 class AppConfig:
     """Runtime configuration assembled from INI file + CLI overrides."""
@@ -144,6 +147,7 @@ class AppConfig:
     once:             bool  = False
     auto_discover_bms:  bool = True
     auto_discover_mppt: bool = True
+    server: ServerConfig = field(default_factory=ServerConfig)
 
 
 # ── MAC / key parsing helpers ─────────────────────────────────────────────────
@@ -276,6 +280,22 @@ def load_config(ini_path: Optional[str]) -> AppConfig:
     cfg.scan_timeout     = float(g.get("scan_timeout",     cfg.scan_timeout))
     cfg.log_level        = g.get("log_level", cfg.log_level).upper()
     cfg.theme            = g.get("theme",     cfg.theme).lower()
+
+    # [server] -----------------------------------------------------------------
+    if "server" in parser:
+        s = parser["server"]
+
+        def _bool(key: str, default: bool) -> bool:
+            return s.get(key, str(default)).strip().lower() in ("1", "true", "yes", "on")
+
+        cfg.server = ServerConfig(
+            enabled   = _bool("enabled",   False),
+            host      = s.get("host",      "0.0.0.0"),
+            port      = int(s.get("port",  "4443")),
+            cert_file = s.get("cert_file", "server.crt"),
+            key_file  = s.get("key_file",  "server.key"),
+            auto_cert = _bool("auto_cert", True),
+        )
 
     # [bms] --------------------------------------------------------------------
     if "bms" in parser and parser["bms"]:

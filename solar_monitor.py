@@ -424,11 +424,22 @@ async def main() -> None:
         f"theme: {cfg.theme}"
     )
 
-    # Run workers + dashboard writer concurrently
+    # Run workers + dashboard writer + optional HTTPS server concurrently
     tasks = [asyncio.create_task(w.run()) for w in workers]
     tasks.append(asyncio.create_task(
         _dashboard_loop(cfg.state_file, output_path, cfg.theme, dash_interval)
     ))
+
+    if cfg.server.enabled:
+        from solar_monitor.server import run_https_server
+        log.info(
+            f"HTTPS server enabled — https://{cfg.server.host}:{cfg.server.port}/"
+        )
+        tasks.append(asyncio.create_task(
+            run_https_server(cfg.server, output_path, cfg.state_file)
+        ))
+    else:
+        log.info("HTTPS server disabled (set [server] enabled = true to enable)")
 
     try:
         await asyncio.gather(*tasks)

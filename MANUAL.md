@@ -20,6 +20,7 @@
 12. [Adding a New Data Source](#12-adding-a-new-data-source)
 13. [Troubleshooting](#13-troubleshooting)
 14. [Reference](#14-reference)
+15. [HTTPS Dashboard Server](#15-https-dashboard-server)
 
 ---
 
@@ -152,7 +153,7 @@ python3 solar_monitor.py --config config.ini
 
 ```bash
 python3 -m unittest discover -s tests -v
-# Expected: 443 tests, 0 failures (runs without BLE hardware or browser)
+# Expected: 516 tests, 0 failures (runs without BLE hardware or browser)
 ```
 
 ---
@@ -695,7 +696,7 @@ ls -la solar_state.json    # watch modification time
 ```bash
 cd /path/to/solar_monitor
 python3 -m unittest discover -s tests -v
-# Expected: 443 tests, 0 failures — no BLE hardware or browser needed
+# Expected: 516 tests, 0 failures — no BLE hardware or browser needed
 ```
 
 ---
@@ -745,11 +746,13 @@ python3 -m unittest discover -s tests -v
 | `solar_monitor/state.py` | Atomic JSON state file I/O |
 | `solar_monitor/config.py` | AppConfig, INI loading, CLI overrides |
 | `solar_monitor/models.py` | DeviceReading dataclass |
+| `solar_monitor/server.py` | HTTPS server, cert generation, SSL context |
 | `tests/test_solar_monitor.py` | JBD/Victron protocol + dashboard tests |
 | `tests/test_split_process.py` | State file + split-process tests |
 | `tests/test_ble_resilience.py` | VictronScanner, BLE resilience tests |
 | `tests/test_supervisor.py` | Supervisor: WorkerSpec, WorkerProcess tests |
 | `tests/test_console_monitor.py` | Rich console dashboard tests |
+| `tests/test_https_server.py` | HTTPS server, cert, routing, config tests |
 
 ### 14.4 Config quick reference
 
@@ -795,3 +798,213 @@ Label = MAC : 32-char-key  [ type=mppt|inverter|monitor|dcdc ]
 | Magenta | `bright_magenta` | Inverter output, yield today |
 | Red | `bright_red` | Errors, faults, alarms, SoC < 30% |
 | Dim grey | `bright_black` | Labels, metadata |
+
+---
+
+## 15. HTTPS Dashboard Server
+
+Solar Monitor includes a built-in HTTPS server that serves the dashboard HTML
+and state JSON directly — no nginx, no separate web server needed.
+
+### 15.1 Quick start
+
+Add a `[server]` section to `config.ini`:
+
+```ini
+[server]
+enabled   = true
+port      = 4443
+auto_cert = true      # generate a self-signed cert on first run
+```
+
+Start the supervisor normally:
+
+```bash
+python3 solar_monitor.py --config config.ini
+```
+
+Browse to `https://your-pi-ip:4443/` — your browser will warn about the
+self-signed certificate the first time (see Section 15.4 to dismiss it).
+
+### 15.2 Configuration
+
+All settings live in the `[server]` section:
+
+```ini
+[server]
+
+# Enable the HTTPS server (default: false — disabled)
+enabled   = true
+
+# Address to bind on.  0.0.0.0 = all interfaces.
+host      = 0.0.0.0
+
+# Port to listen on.  4443 avoids needing root (ports < 1024 require it).
+port      = 4443
+
+# TLS certificate and private key files.
+# If auto_cert = true and these files don't exist, they are generated automatically.
+cert_file = server.crt
+key_file  = server.key
+
+# Automatically generate a self-signed certificate when cert_file doesn't exist.
+# Set to false if you supply your own certificate (e.g. from Let's Encrypt).
+auto_cert = true
+```
+
+**Full example with all defaults explicit:**
+
+```ini
+[server]
+enabled   = false
+host      = 0.0.0.0
+port      = 4443
+cert_file = server.crt
+key_file  = server.key
+auto_cert = true
+```
+
+### 15.3 Routes
+
+| Route | Response | Notes |
+|---|---|---|
+| `GET /` | Dashboard HTML | Same as the `output` file |
+| `GET /dashboard.html` | Dashboard HTML | Same as `/` |
+| `GET /state.json` | Raw state JSON | All BMS and Victron readings |
+| `GET /health` | `200 OK` | Health check for load balancers |
+| Everything else | `404 Not Found` | |
+
+### 15.4 Self-signed certificates
+
+When `auto_cert = true` and `cert_file` does not exist, the server generates
+a self-signed RSA-2048 certificate on first run:
+
+- **Validity:** 10 years
+- **SAN entries:** `localhost`, `127.0.0.1`, and the configured `host` address
+- **Key permissions:** `600` (owner-readable only)
+- **Storage:** `cert_file` / `key_file` paths from config
+
+**Dismissing the browser warning permanently:**
+
+Add the certificate to your OS or browser trust store. The cert file
+(`server.crt` by default) is a standard PEM file.
+
+*macOS:* `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain server.crt`
+
+*Linux (system-wide):*
+```bash
+sudo cp server.crt /usr/local/share/ca-certificates/solar-monitor.crt
+sudo update-ca-certificates
+```
+
+*Windows:* Double-click `server.crt` → Install Certificate → Local Machine → Trusted Root.
+
+*Chrome / Firefox:* Settings → Privacy & Security → Certificates → Import.
+
+### 15.5 Using a real certificate (Let's Encrypt)
+
+If the Pi is reachable by domain name, use Certbot:
+
+```bash
+sudo apt install certbot
+sudo certbot certonly --standalone -d solar.yourdomain.com
+```
+
+Point the config at the issued files:
+
+```ini
+[server]
+enabled   = true
+port      = 443           # standard HTTPS — requires running as root or with CAP_NET_BIND_SERVICE
+cert_file = /etc/letsencrypt/live/solar.yourdomain.com/fullchain.pem
+key_file  = /etc/letsencrypt/live/solar.yourdomain.com/privkey.pem
+auto_cert = false         # never overwrite the real cert
+```
+
+For port 443 without root, grant the capability:
+
+```bash
+sudo setcap 'cap_net_bind_service=+ep' /usr/bin/python3.12
+```
+
+Or use a port above 1024 and put nginx in front as a reverse proxy.
+
+### 15.6 Running with nginx as a reverse proxy
+
+This is the recommended production setup — nginx handles port 443 and TLS
+termination, solar_monitor listens on an internal-only HTTP port:
+
+```ini
+[server]
+enabled   = true
+host      = 127.0.0.1    # bind to localhost only — nginx proxies to it
+port      = 4443
+auto_cert = true
+```
+
+`/etc/nginx/sites-available/solar`:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name solar.yourdomain.com;
+
+    ssl_certificate     /etc/letsencrypt/live/solar.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/solar.yourdomain.com/privkey.pem;
+
+    location / {
+        proxy_pass https://127.0.0.1:4443;
+        proxy_ssl_verify off;               # internal self-signed cert — OK
+        add_header Cache-Control "no-cache";
+    }
+}
+```
+
+### 15.7 How it works
+
+The HTTPS server runs as an `asyncio` Task inside the supervisor — it shares
+the event loop with the dashboard writer and needs no separate process.
+It uses Python's built-in `ssl.SSLContext` wrapped around `asyncio.start_server`.
+
+Each request is handled asynchronously: the server reads the request line,
+routes it, and streams the response. A 10-second read timeout prevents stalled
+connections from holding resources.
+
+The server always serves the current contents of the `output` file — the same
+file the dashboard writer updates every `victron_interval / 2` seconds.
+
+### 15.8 Security notes
+
+- **Only GET requests are accepted** — POST, DELETE, and all other methods
+  return 404.
+- **No authentication** — the dashboard is served to anyone who can reach
+  the port. Use firewall rules, VPN, or nginx `auth_basic` if you need
+  access control.
+- **TLS 1.2 minimum** — TLS 1.0 and 1.1 are disabled.
+- **Private key permissions** — auto-generated keys are written with `chmod 600`.
+- **No directory traversal** — only three explicit paths are served; all others
+  return 404.
+
+### 15.9 Troubleshooting
+
+**Browser shows `NET::ERR_CERT_AUTHORITY_INVALID`**
+
+Expected with a self-signed cert. Either add the cert to the trust store
+(Section 15.4) or accept the risk for a local dashboard.
+
+**`FileNotFoundError: HTTPS server: certificate file(s) not found`**
+
+`auto_cert = false` and the cert/key files don't exist. Either set
+`auto_cert = true` or provide the files at the configured paths.
+
+**`OSError: [Errno 98] Address already in use`**
+
+Another process is using the port. Change `port` or stop the other process:
+```bash
+sudo lsof -i :4443
+```
+
+**`PermissionError: [Errno 13] Permission denied`**
+
+Port below 1024 requires root or `CAP_NET_BIND_SERVICE`. Use port ≥ 1024
+(recommended: 4443) or grant the capability (Section 15.5).
