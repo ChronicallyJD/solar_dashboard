@@ -1,12 +1,12 @@
 [general]
-output = dashboard.html
-state_file = solar_state.json
-bms_interval = 120
+output           = dashboard.html
+state_file       = solar_state.json
+bms_interval     = 120
 victron_interval = 30
-scan_timeout = 10
-max_history = 600
-log_level = INFO
-theme = business
+scan_timeout     = 10
+max_history      = 600
+log_level        = INFO
+theme            = business
 
 [bms]
 # House Bank = AA:BB:CC:DD:EE:FF : 123456
