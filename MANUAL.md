@@ -163,7 +163,7 @@ python3 solar_monitor.py --config config.ini
 
 ```bash
 python3 -m unittest discover -s tests -v
-# Expected: 765 tests, 0 failures (runs without BLE hardware or browser)
+# Expected: 775 tests, 0 failures (runs without BLE hardware or browser)
 ```
 
 ---
@@ -706,7 +706,7 @@ ls -la solar_state.json    # watch modification time
 ```bash
 cd /path/to/solar_monitor
 python3 -m unittest discover -s tests -v
-# Expected: 765 tests, 0 failures — no BLE hardware or browser needed
+# Expected: 775 tests, 0 failures — no BLE hardware or browser needed
 ```
 
 **Test files and what they cover:**

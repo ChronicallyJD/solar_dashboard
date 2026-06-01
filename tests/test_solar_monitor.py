@@ -57,6 +57,7 @@ from solar_monitor.victron import (
     _parse_vebus, _parse_solar, _parse_inverter, _parse_bmv,
     _parse_dcenergy, _parse_inverter_rs, PARSERS,
     _INVERTER_STATES, _VALID_STATES, _RECORDS_WITH_STATE,
+    read_victron_advertisement,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -656,10 +657,143 @@ class TestBMVParser(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. Victron DC Energy parser (0x0D)
+# 7b. Voltage plausibility checks (per-type ceilings)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestDCEnergyParser(unittest.TestCase):
+class TestVoltagePlausibilityCeilings(unittest.TestCase):
+    """
+    The decode pipeline applies per-type voltage ceilings to catch garbage
+    decryptions that happen to parse without error:
+
+      monitor  → 80V  (SmartShunt, BMV — DC bus only, 48V max system)
+      mppt     → 150V (solar charger DC output)
+      inverter → 150V (with 9V floor)
+      unknown  → 150V
+
+    This is the fix for SmartShunt reporting 142.3V / -1499A — values which
+    are below the old 150V ceiling but physically impossible for any supported
+    battery monitor.
+    """
+
+    def _read_with_type(self, voltage_v, current_a, dtype):
+        """
+        Run controlled values through the plausibility gate by patching
+        the parsing pipeline to return specific voltage/current values,
+        then calling read_victron_advertisement with the device type set.
+
+        Uses record type 0x02 for monitor and 0x07 for inverter — both are
+        valid for their respective configured types.
+        """
+        from unittest.mock import patch, MagicMock
+        from solar_monitor.victron import read_victron_advertisement, PARSERS
+
+        class _BLE:
+            address = "AA:BB:CC:DD:EE:FF"
+            name    = "TestDevice"
+
+        # Choose a record type that is allowed for the given device type
+        rec_type = 0x07 if dtype == "inverter" else 0x02
+
+        def _fake_parse(dec):
+            return {
+                "voltage_v":    voltage_v,
+                "current_a":    current_a,
+                "power_w":      None,
+                "capacity_pct": 80 if dtype == "monitor" else None,
+                "ttg_minutes":  None,
+                "alarm_reason": None,
+                # inverter fields
+                "ac_out_power_va": 755.0 if dtype == "inverter" else None,
+                "inverter_state":  "Inverting" if dtype == "inverter" else None,
+                "ac_in_power_w":   None,
+                "ac_in_source":    None,
+                "vebus_error":     0,
+            }
+
+        fake_adv = MagicMock()
+        fake_adv.manufacturer_data = {0x02E1: bytes(12)}
+
+        with patch("solar_monitor.victron.extract_victron_mfr",
+                   return_value=bytes(12)), \
+             patch("solar_monitor.victron.parse_payload",
+                   return_value=(rec_type, 0, bytes(16))), \
+             patch("solar_monitor.victron.try_decrypt",
+                   return_value=bytes(16)), \
+             patch.dict(PARSERS, {rec_type: _fake_parse}):
+            result = read_victron_advertisement(
+                device               = _BLE(),
+                adv_data             = fake_adv,
+                friendly_name        = "TestDevice",
+                enc_key              = "00" * 16,
+                device_type_override = dtype,
+            )
+        return result
+
+    def test_monitor_142v_rejected(self):
+        """142.3V must be rejected for monitor type — the SmartShunt bug."""
+        r = self._read_with_type(142.3, -1.5, "monitor")
+        self.assertIsNotNone(r.error,
+            "142.3V must be rejected as implausible for a monitor device")
+
+    def test_monitor_55v_accepted(self):
+        """55V is valid for a 48V system SmartShunt."""
+        r = self._read_with_type(55.0, -10.0, "monitor")
+        self.assertIsNone(r.error,
+            "55V must be accepted as valid for a monitor device")
+
+    def test_monitor_80v_boundary_accepted(self):
+        """80V is exactly the ceiling for monitor — must be accepted."""
+        r = self._read_with_type(80.0, 0.0, "monitor")
+        self.assertIsNone(r.error,
+            "80.0V is the monitor ceiling and must be accepted")
+
+    def test_monitor_80_1v_rejected(self):
+        """80.1V is just above the monitor ceiling — must be rejected."""
+        r = self._read_with_type(80.1, 0.0, "monitor")
+        self.assertIsNotNone(r.error,
+            "80.1V must be rejected as implausible for a monitor device")
+
+    def test_inverter_120v_accepted(self):
+        """120V is valid for an inverter-type device."""
+        r = self._read_with_type(120.0, -10.0, "inverter")
+        # Inverter ceiling is 150V; 120V should pass
+        self.assertIsNone(r.error,
+            "120V should be accepted for an inverter device")
+
+    def test_inverter_150v_boundary_accepted(self):
+        """150V is the inverter ceiling — must be accepted."""
+        r = self._read_with_type(150.0, -1.0, "inverter")
+        self.assertIsNone(r.error,
+            "150V is the inverter ceiling and must be accepted")
+
+    def test_inverter_151v_rejected(self):
+        """151V is above the inverter ceiling — must be rejected."""
+        r = self._read_with_type(151.0, -1.0, "inverter")
+        self.assertIsNotNone(r.error,
+            "151V must be rejected as implausible for an inverter device")
+
+    def test_current_over_2000a_rejected(self):
+        """±2000A is the current ceiling for all types."""
+        r = self._read_with_type(54.0, -2001.0, "monitor")
+        self.assertIsNotNone(r.error,
+            "-2001A must be rejected as implausible")
+
+    def test_current_1999a_accepted(self):
+        """1999A is just below the current ceiling."""
+        r = self._read_with_type(54.0, 1999.0, "monitor")
+        self.assertIsNone(r.error,
+            "1999A must be accepted (within ±2000A ceiling)")
+
+    def test_v_ceilings_in_source(self):
+        """Per-type ceiling dict must be present in the source."""
+        with open("/home/claude/solar_monitor/victron.py") as f:
+            src = f.read()
+        self.assertIn("80.0", src, "80V monitor ceiling must be in source")
+        self.assertIn("v_ceiling", src, "v_ceiling variable must be in source")
+        self.assertIn("v_ceilings", src, "v_ceilings dict must be in source")
+
+
+
 
     def _build(self, batt_mv=5200, alarm=0, current_u22=0):
         # _parse_dcenergy: voltage = int16 LE at byte[2:4], 0.01V scale

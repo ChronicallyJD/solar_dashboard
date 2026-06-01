@@ -6,6 +6,35 @@ All notable changes to this project, in reverse-chronological order.
 
 ## [Current] — SQLite history, MCP server, HTTPS server, mobile dashboard, supervisor
 
+### Bug fix: SmartShunt / BMV reporting impossible voltage and current
+
+**Symptom:** Battery Monitor (SmartShunt, BMV) logged values like
+`V=142.3  A=-1499.162` — physically impossible for any supported battery system.
+
+**Root cause:** The voltage plausibility ceiling was a global 150V for all
+device types. A garbage decryption (e.g. a foreign VE.Smart network payload
+decrypted with the correct key but mismatched record type) could produce values
+such as 142.3V, which are below 150V and therefore passed the gate.
+
+**Fix:** Per-type voltage ceilings in `read_victron_advertisement`:
+
+| Type | Ceiling | Rationale |
+|---|---|---|
+| `monitor` (SmartShunt, BMV) | **80V** | DC bus only; 48V nominal max ≈ 58.4V absorbed |
+| `mppt` | 150V | DC output of solar charger |
+| `inverter` / VE.Bus | 150V | DC bus with 9V floor |
+| unknown | 150V | Widest window for unclassified devices |
+
+142.3V now fails the 80V ceiling for `monitor` type and falls through to the
+next candidate (or returns an error if no candidates pass).
+
+14 new tests in `TestVoltagePlausibilityCeilings` verify the boundary values
+for each type and confirm the SmartShunt bug scenario is caught.
+
+---
+
+
+
 ### SQLite persistent history (`solar_monitor/history.py`)
 - New `HistoryDB` class — stores every successful `DeviceReading` to a local
   SQLite database after each poll cycle
@@ -230,7 +259,7 @@ auto_cert = true
 ---
 
 ### Test suite
-- **765 tests**, all passing, no BLE hardware or browser required
+- **775 tests**, all passing, no BLE hardware or browser required
 - Tests added / extended this audit:
   - `normalise_mac`, `parse_bms_value`, `parse_mac_key` — config parsing helpers
   - `_soc_color`, `_no_card` — dashboard utility functions

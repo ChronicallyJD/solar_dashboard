@@ -1041,27 +1041,43 @@ def read_victron_advertisement(
         v_check = parsed.get("voltage_v")
         a_check = parsed.get("current_a")
 
-        # Voltage plausibility. Upper bound 150V covers all Victron-compatible
-        # battery systems (12/24/36/48V nominal). Lower bound depends on type:
-        # inverters require at least 9V (minimum 12V nominal system at low SoC);
-        # anything below that is almost certainly a parser mismatch, not a real
-        # battery reading. For other types the floor is 0V (no lower check).
-        v_min = 9.0 if device_type_override == "inverter" else 0.0
-        if v_check is not None and not (v_min <= v_check <= 150.0):
+        # Voltage plausibility — upper bound is per device type:
+        #   inverter / vebus: up to 150V covers 48V nominal systems including
+        #       absorption voltage (~ 58V) and any measurement headroom.
+        #   mppt / solar charger: same 150V ceiling (PV input can be higher but
+        #       the battery output reported is DC bus, same as inverter).
+        #   monitor (SmartShunt, BMV): battery bus only — 80V ceiling is
+        #       generous for a 48V system (max absorption ≈ 58.4V). If we see
+        #       > 80V from a monitor record it is almost certainly parser garbage
+        #       from a mismatched or foreign payload, not a real battery voltage.
+        #   default: 150V (unknown types get the widest window).
+        # Lower bound: inverter requires ≥ 9V (12V system at low SoC);
+        #   monitor requires ≥ 0V (shunt can legitimately read 0V on a flat pack).
+        v_ceilings = {
+            "monitor":  80.0,
+            "mppt":    150.0,
+            "inverter": 150.0,
+        }
+        v_ceiling = v_ceilings.get(device_type_override or "", 150.0)
+        v_min     = 9.0 if device_type_override == "inverter" else 0.0
+
+        if v_check is not None and not (v_min <= v_check <= v_ceiling):
             log.debug(
                 f"  [Victron] {name}: rec=0x{record_type:02X} "
-                f"V={v_check:.2f} outside {v_min}-150V range, "
+                f"V={v_check:.2f} outside {v_min}-{v_ceiling}V range "
+                f"(type={device_type_override or 'unknown'}), "
                 f"trying next candidate"
             )
             last_error = (
                 f"decoded voltage {v_check:.2f}V is outside the "
-                f"physically plausible {v_min}-150V range"
+                f"physically plausible {v_min}-{v_ceiling}V range "
+                f"for device type '{device_type_override or 'unknown'}'"
             )
             continue
 
-        # Current: ±2000A catches gross parser mismatches (e.g. BMV parser
-        # applied to a Solar Charger record gives hundreds of amps from
-        # garbage bit fields)
+        # Current plausibility — ±2000A catches gross parser mismatches.
+        # For monitor-type (SmartShunt, BMV) the hardware maximum is ±2000A
+        # so we keep that ceiling but flag suspiciously large values in debug.
         if a_check is not None and abs(a_check) > 2000.0:
             log.debug(
                 f"  [Victron] {name}: rec=0x{record_type:02X} "
