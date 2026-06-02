@@ -6,6 +6,33 @@ All notable changes to this project, in reverse-chronological order.
 
 ## [Current] — SQLite history, MCP server, HTTPS server, mobile dashboard, supervisor
 
+### Bug fix: Format A nibble order — VE.Bus 0x0C devices silently ignored
+
+**Symptom:** A VE.Bus Smart Dongle broadcasting record type `0x0C` (newer
+firmware) was silently discarded — the device never appeared in the dashboard
+or logs despite a valid advertisement key.
+
+**Root cause:** `parse_payload()` extracted the record type from the **low
+nibble** of byte[3].  The correct extraction per the Victron BLE spec and the
+authoritative `victron-ble` reference library is the **high nibble**.
+
+For byte[3] = `0xC0` (a real packet from the bug report's HCI dump):
+
+| Nibble order | Record type | Result |
+|---|---|---|
+| Low nibble (wrong) | `0x00` | Unknown — device silently dropped |
+| High nibble (correct) | `0x0C` | VE.Bus full spec — decrypted correctly |
+
+**Fix:** `parse_payload()` line 211 changed from  
+`record_type = mfr_raw[3] & 0x0F` to  
+`record_type = (mfr_raw[3] & 0xF0) >> 4`
+
+Docstring updated to document correct nibble order.  8 new tests in
+`TestParsePayloadNibbleOrder` verify boundary cases for all known record
+types and include a regression test using the exact bytes from the HCI dump.
+
+---
+
 ### Bug fix: SmartShunt / BMV reporting impossible voltage and current
 
 **Symptom:** Battery Monitor (SmartShunt, BMV) logged values like
@@ -259,7 +286,7 @@ auto_cert = true
 ---
 
 ### Test suite
-- **775 tests**, all passing, no BLE hardware or browser required
+- **783 tests**, all passing, no BLE hardware or browser required
 - Tests added / extended this audit:
   - `normalise_mac`, `parse_bms_value`, `parse_mac_key` — config parsing helpers
   - `_soc_color`, `_no_card` — dashboard utility functions

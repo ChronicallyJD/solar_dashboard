@@ -187,14 +187,20 @@ def parse_payload(mfr_raw: bytes) -> tuple[int, int, bytes]:
 
     Handles both Format A (starts with 0x10) and Format B (direct record type).
 
-    Format A layout (per Victron Extra Manufacturer Data spec):
+    Format A layout (per Victron Extra Manufacturer Data spec v1.05):
       [0]    0x10  outer PDU type
       [1-2]  uint16 LE  model ID (Victron product ID)
-      [3]    high nibble = key index, low nibble = record type
+      [3]    high nibble = record type, low nibble = encryption key index
       [4]    counter byte
       [5-6]  uint16 LE  IV / nonce
       [7]    first byte of encryption key (for verification)
       [8+]   AES-128-CTR ciphertext
+
+    NOTE — nibble order: byte[3] high nibble carries the record type and low
+    nibble carries the key index.  This matches the victron-ble open-source
+    reference implementation (keshavdv/victron-ble).  An earlier version of
+    this code had the nibbles reversed, causing record type 0x0C (VE.Bus,
+    newer firmware) to be read as 0x00 (unknown) and silently discarded.
 
     Format B layout:
       [0]    record type
@@ -208,12 +214,13 @@ def parse_payload(mfr_raw: bytes) -> tuple[int, int, bytes]:
     """
     if mfr_raw[0] == 0x10 and len(mfr_raw) >= 9:
         model_id    = struct.unpack_from("<H", mfr_raw, 1)[0]
-        record_type = mfr_raw[3] & 0x0F
+        record_type = (mfr_raw[3] & 0xF0) >> 4   # HIGH nibble = record type
+        key_index   =  mfr_raw[3] & 0x0F          # LOW  nibble = key index
         nonce_val   = struct.unpack_from("<H", mfr_raw, 5)[0]
         ciphertext  = mfr_raw[8:]
         log.debug(
             f"    Format A: model=0x{model_id:04X}({model_id}) "
-            f"rec=0x{record_type:02X} nonce=0x{nonce_val:04X}"
+            f"rec=0x{record_type:02X} key_idx={key_index} nonce=0x{nonce_val:04X}"
         )
         return record_type, nonce_val, ciphertext
     elif len(mfr_raw) >= 5:

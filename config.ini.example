@@ -13,26 +13,19 @@ theme = business
 
 [victron]
 # MySmartShunt = AA:BB:CC:DD:EE:FF : 0123456789abcdef0123456789abcdef  type=monitor
-# MultiPlus    = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverter
+# MultiPlus = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverter
 
 [server]
 # enabled = false
-# host = 0.0.0.0
 # port = 4443
-# cert_file = server.crt
-# key_file = server.key
 # auto_cert = true
 
 [history]
 # enabled = false
 # db_path = solar_history.db
 # retention_days = 1095
-# vacuum_interval_days = 7
 
 [mcp]
 # enabled = true
 # api_key =
-# allowed_tools =
 # rate_limit = 60
-# require_local = true
-# log_requests = false

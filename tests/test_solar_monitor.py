@@ -57,7 +57,7 @@ from solar_monitor.victron import (
     _parse_vebus, _parse_solar, _parse_inverter, _parse_bmv,
     _parse_dcenergy, _parse_inverter_rs, PARSERS,
     _INVERTER_STATES, _VALID_STATES, _RECORDS_WITH_STATE,
-    read_victron_advertisement,
+    read_victron_advertisement, parse_payload,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -876,8 +876,115 @@ class TestParsersTable(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 9. DeviceReading model
+# 9b. parse_payload — Format A nibble order (critical correctness test)
 # ─────────────────────────────────────────────────────────────────────────────
+
+class TestParsePayloadNibbleOrder(unittest.TestCase):
+    """
+    Format A byte[3] encodes:  high nibble = record type, low nibble = key index.
+    An earlier bug had this inverted (low=rec, high=key), causing record type 0x0C
+    (VE.Bus newer firmware) to be read as 0x00 (unknown) and silently discarded.
+
+    Reference: victron-ble open-source library (keshavdv/victron-ble):
+        record_type = (data[3] & 0xF0) >> 4
+        key_index   =  data[3] & 0x0F
+    """
+
+    def _format_a(self, rec_type, key_idx, nonce=0xAF1D, model=0x3502):
+        """Build a minimal Format A payload with the given record type and key index."""
+        byte3 = ((rec_type & 0x0F) << 4) | (key_idx & 0x0F)
+        payload = bytearray(12)
+        payload[0] = 0x10
+        import struct
+        struct.pack_into("<H", payload, 1, model)
+        payload[3] = byte3
+        payload[4] = 0x02  # counter
+        struct.pack_into("<H", payload, 5, nonce)
+        payload[7] = 0xA8  # key verification byte
+        return bytes(payload)
+
+    def test_high_nibble_is_record_type(self):
+        """Record type must come from the HIGH nibble of byte[3]."""
+        from solar_monitor.victron import parse_payload
+        # rec_type=0x0C (VE.Bus), key_idx=0 → byte[3] = 0xC0
+        payload = self._format_a(rec_type=0x0C, key_idx=0)
+        self.assertEqual(payload[3], 0xC0)
+        rt, _, _ = parse_payload(payload)
+        self.assertEqual(rt, 0x0C,
+            f"Expected record type 0x0C (VE.Bus), got 0x{rt:02X}. "
+            f"byte[3]=0xC0: high nibble (C) should be record type, "
+            f"not low nibble (0).")
+
+    def test_low_nibble_is_key_index(self):
+        """Key index lives in the LOW nibble — does not affect record type."""
+        from solar_monitor.victron import parse_payload
+        # rec_type=0x02 (BMV), key_idx=3 → byte[3] = 0x23
+        payload = self._format_a(rec_type=0x02, key_idx=3)
+        self.assertEqual(payload[3], 0x23)
+        rt, _, _ = parse_payload(payload)
+        self.assertEqual(rt, 0x02,
+            f"Record type should be 0x02, got 0x{rt:02X}. "
+            f"Low nibble (key_idx=3) must not corrupt the record type.")
+
+    def test_real_hci_packet_record_type(self):
+        """
+        Regression test for bug report: raw HCI packet where byte[3]=0xC0
+        was incorrectly parsed as record type 0x00 instead of 0x0C (VE.Bus).
+
+        HCI dump (from user bug report):
+            0020: 1a ff e1 02 10 02 35 c0 02 1d af a8 ...
+                          ^^^^^ = Victron company ID
+                               ^^ = Format A marker (0x10)
+                                  ^^ ^^ = model ID 0x3502
+                                        ^^ = 0xC0 → high nibble = 0xC → rec 0x0C
+        """
+        from solar_monitor.victron import parse_payload
+        # Manufacturer payload (after stripping company ID):
+        mfr_payload = bytes.fromhex("100235c0021dafa830a47bdf44079b750b880495ae6f96")
+        rt, nonce, cipher = parse_payload(mfr_payload)
+        self.assertEqual(rt, 0x0C,
+            f"byte[3]=0xC0 must decode to record type 0x0C (VE.Bus), "
+            f"got 0x{rt:02X}. This was the bug causing the device to be "
+            f"silently ignored.")
+        self.assertEqual(nonce, 0xAF1D)
+        self.assertEqual(len(cipher), 15)
+
+    def test_record_type_0x01_mppt(self):
+        from solar_monitor.victron import parse_payload
+        # rec=0x01, key=0 → byte[3]=0x10
+        payload = self._format_a(rec_type=0x01, key_idx=0)
+        rt, _, _ = parse_payload(payload)
+        self.assertEqual(rt, 0x01)
+
+    def test_record_type_0x07_vebus_old(self):
+        from solar_monitor.victron import parse_payload
+        # rec=0x07, key=0 → byte[3]=0x70
+        payload = self._format_a(rec_type=0x07, key_idx=0)
+        rt, _, _ = parse_payload(payload)
+        self.assertEqual(rt, 0x07)
+
+    def test_record_type_0x02_bmv(self):
+        from solar_monitor.victron import parse_payload
+        # rec=0x02, key=0 → byte[3]=0x20
+        payload = self._format_a(rec_type=0x02, key_idx=0)
+        rt, _, _ = parse_payload(payload)
+        self.assertEqual(rt, 0x02)
+
+    def test_high_nibble_not_low(self):
+        """Explicitly confirm: if nibbles were swapped, 0xC0 would give 0x00."""
+        byte3 = 0xC0
+        wrong_rec  = byte3 & 0x0F          # old (wrong) code
+        correct_rec = (byte3 & 0xF0) >> 4  # corrected code
+        self.assertEqual(wrong_rec,   0x00, "Sanity: old code gives 0x00")
+        self.assertEqual(correct_rec, 0x0C, "Sanity: new code gives 0x0C")
+
+    def test_docstring_matches_implementation(self):
+        """parse_payload docstring must document high nibble = record type."""
+        from solar_monitor.victron import parse_payload
+        doc = parse_payload.__doc__ or ""
+        self.assertIn("high nibble = record type", doc)
+
+
 
 class TestDeviceReading(unittest.TestCase):
 
