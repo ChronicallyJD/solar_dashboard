@@ -1,383 +1,184 @@
-# Solar Monitor — Changelog
+# Solar Monitor Changelog
 
-All notable changes to this project, in reverse-chronological order.
+Notable changes, newest first.
 
----
+## 2026-06-02: VE.Bus record type read from wrong nibble
 
-## [Current] — SQLite history, MCP server, HTTPS server, mobile dashboard, supervisor
+A VE.Bus Smart Dongle broadcasting record type `0x0C` (newer firmware) was
+silently dropped: it never appeared in the dashboard or logs despite a valid
+advertisement key. `parse_payload()` extracted the record type from the low
+nibble of byte[3], but the Victron BLE spec (and the reference `victron-ble`
+library) put it in the high nibble, so `0xC0` decoded as unknown type `0x00`
+instead of `0x0C`. Fixed to `(mfr_raw[3] & 0xF0) >> 4`, with regression tests
+covering all known record types including the exact bytes from the original
+HCI dump.
 
-### Bug fix: Format A nibble order — VE.Bus 0x0C devices silently ignored
+## 2026-06-01: SmartShunt / BMV impossible readings
 
-**Symptom:** A VE.Bus Smart Dongle broadcasting record type `0x0C` (newer
-firmware) was silently discarded — the device never appeared in the dashboard
-or logs despite a valid advertisement key.
+Battery monitors occasionally logged values like V=142.3, A=-1499, impossible
+for any supported battery system. The voltage plausibility ceiling was a
+global 150V, so a garbage decryption (for example a foreign VE.Smart payload
+decrypted with the correct key but mismatched record type) could still pass.
+`read_victron_advertisement` now applies per-type ceilings: 80V for monitor
+devices (SmartShunt, BMV, DC bus only), 150V for MPPT, inverter/VE.Bus, and
+unknown types. Implausible candidates fall through to the next candidate or
+return an error if none pass.
 
-**Root cause:** `parse_payload()` extracted the record type from the **low
-nibble** of byte[3].  The correct extraction per the Victron BLE spec and the
-authoritative `victron-ble` reference library is the **high nibble**.
+## 2026-05-29: SQLite history, MCP server, HTTPS server, mobile dashboard
 
-For byte[3] = `0xC0` (a real packet from the bug report's HCI dump):
-
-| Nibble order | Record type | Result |
-|---|---|---|
-| Low nibble (wrong) | `0x00` | Unknown — device silently dropped |
-| High nibble (correct) | `0x0C` | VE.Bus full spec — decrypted correctly |
-
-**Fix:** `parse_payload()` line 211 changed from  
-`record_type = mfr_raw[3] & 0x0F` to  
-`record_type = (mfr_raw[3] & 0xF0) >> 4`
-
-Docstring updated to document correct nibble order.  8 new tests in
-`TestParsePayloadNibbleOrder` verify boundary cases for all known record
-types and include a regression test using the exact bytes from the HCI dump.
-
----
-
-### Bug fix: SmartShunt / BMV reporting impossible voltage and current
-
-**Symptom:** Battery Monitor (SmartShunt, BMV) logged values like
-`V=142.3  A=-1499.162` — physically impossible for any supported battery system.
-
-**Root cause:** The voltage plausibility ceiling was a global 150V for all
-device types. A garbage decryption (e.g. a foreign VE.Smart network payload
-decrypted with the correct key but mismatched record type) could produce values
-such as 142.3V, which are below 150V and therefore passed the gate.
-
-**Fix:** Per-type voltage ceilings in `read_victron_advertisement`:
-
-| Type | Ceiling | Rationale |
-|---|---|---|
-| `monitor` (SmartShunt, BMV) | **80V** | DC bus only; 48V nominal max ≈ 58.4V absorbed |
-| `mppt` | 150V | DC output of solar charger |
-| `inverter` / VE.Bus | 150V | DC bus with 9V floor |
-| unknown | 150V | Widest window for unclassified devices |
-
-142.3V now fails the 80V ceiling for `monitor` type and falls through to the
-next candidate (or returns an error if no candidates pass).
-
-14 new tests in `TestVoltagePlausibilityCeilings` verify the boundary values
-for each type and confirm the SmartShunt bug scenario is caught.
-
----
-
-
-
-### SQLite persistent history (`solar_monitor/history.py`)
-- New `HistoryDB` class — stores every successful `DeviceReading` to a local
-  SQLite database after each poll cycle
-- Schema: single `readings` table with 43 columns covering all `DeviceReading`
-  fields; list fields (`temp_c`, `faults`, `balance_cells`) stored as JSON strings
-- Four indexes: `recorded_at`, `device_name`, `device_type`, composite
-  `(device_name, recorded_at)` — fast date-range and device queries
-- WAL journal mode + `PRAGMA synchronous=NORMAL` — concurrent writes from
-  multiple worker processes never block each other
-- New `HistoryConfig` dataclass — six fields: `enabled`, `db_path`,
-  `retention_days` (default 1095 = 3 years), `vacuum_interval_days` (default 7)
-- `retention_days = 0` keeps data forever; automatic retention runs at most
-  once per hour per worker, tracked in `_meta` table
-- `vacuum()` compacts the database file; runs automatically per
-  `vacuum_interval_days`
-- `load_recent_for_dashboard(max_points)` — returns `{name: [entry, ...]}` dict
-  that pre-populates chart history on worker startup from persistent storage
-- Error readings (`r.error` set) are never stored
-- `write_readings()` returns count of rows inserted; never raises — a failed
-  write cannot crash a worker
-
-### New `[history]` config section
-```ini
-[history]
-enabled              = true
-db_path              = solar_history.db
-retention_days       = 1095        # 0 = keep forever
-vacuum_interval_days = 7
-```
+### SQLite history (`solar_monitor/history.py`)
+- New `HistoryDB` stores every successful `DeviceReading` to a local SQLite
+  database after each poll cycle; error readings are never stored, and a
+  failed write never crashes a worker
+- Single `readings` table covering all `DeviceReading` fields; list fields
+  stored as JSON strings; indexed for date-range and per-device queries
+- WAL journal mode plus `synchronous=NORMAL` so multiple workers can write
+  concurrently
+- Retention (default 3 years, 0 = keep forever) enforced at most once per
+  hour; automatic `vacuum()` on a configurable interval
+- `load_recent_for_dashboard(max_points)` pre-populates chart history on
+  worker startup
+- New `[history]` config section: `enabled`, `db_path`, `retention_days`,
+  `vacuum_interval_days`; see CONFIG.md
 
 ### Management utilities (`utils/`)
-New `utils/` directory for server-side management scripts.
-
-**`utils/purge_history.py`** — delete historical data:
-- `--before DATE` / `--after DATE` — date range filters
-- `--device NAME` / `--type TYPE` — scope deletion to one device or type
-- `--enforce-retention` — apply the configured policy immediately
-- `--vacuum` — compact the database after deletion
-- `--dry-run` — show row count without deleting
-- `--yes` / `-y` — skip confirmation for scripted use
-- `--stats` / `--list-devices` — inspection modes
-- Always requires at least one filter; prompts for confirmation before deletion
-
-**`utils/query_history.py`** — query and export:
-- `--format table|csv|json` — output formats; CSV pipes cleanly to files
-- `--start DATE` / `--end DATE` — accepts `today` and `yesterday` shortcuts
-- `--device NAME` / `--type TYPE` — device filters
-- `--fields col1,col2,...` — column projection for smaller exports
-- `--limit N` / `--order asc|desc` — result controls
-- `--list-devices` / `--list-fields` / `--stats` — inspection modes
-
----
+- `utils/purge_history.py`: delete by date range (`--before`/`--after`),
+  device, or type; `--enforce-retention`, `--vacuum`, `--dry-run`, `--stats`,
+  `--list-devices`; always requires a filter and confirms before deleting
+  (`--yes` to skip)
+- `utils/query_history.py`: query and export as table, CSV, or JSON; date
+  filters accept `today`/`yesterday`; device/type filters, column projection
+  via `--fields`, `--limit`/`--order`, and inspection modes
 
 ### MCP server (`mcp_server.py`)
-- Implements Model Context Protocol 1.0 over stdio transport (JSON-RPC 2.0)
-- No third-party MCP SDK — standard library only, zero extra dependencies
-- Eight read-only tools:
-  - `get_system_status` — total PV W, AC out W, avg SoC, pack count, alerts
-  - `get_battery_status` — all BMS packs: SoC, V, A, Wh, TTE/TTF, faults, balance
-  - `get_solar_status` — all MPPT chargers: PV W, yield Wh, charger state
-  - `get_inverter_status` — all inverters: AC out W, state, alarms, battery V/A
-  - `get_device` — single device by name or MAC, case-insensitive
-  - `list_devices` — all devices with type, online status, key metric
-  - `get_alerts` — active faults/alarms/offline devices; `all_clear: true` when healthy
-  - `get_data_age` — human-readable data freshness per section
-- `read_only = True` hardcoded — never writes to any file, not configurable
-- Security via new `[mcp]` config section:
-  - `api_key` — bearer token required in every `tools/call`; stripped from args
-    before reaching tool functions
-  - `allowed_tools` — comma-separated whitelist; filters `tools/list` too
-  - `rate_limit` — sliding 60-second window (token bucket); `0` = unlimited
-  - `require_local = true` — documents intent (stdio is always local)
-  - `log_requests` — log every tool call to stderr
-- JSON-RPC error codes: `-32001` Unauthorized, `-32002` Forbidden,
-  `-32000` Rate Limited
-- All logging to stderr; stdout reserved for JSON-RPC protocol
-
-### New `[mcp]` config section
-```ini
-[mcp]
-enabled       = true
-api_key       =
-allowed_tools =
-rate_limit    = 60
-require_local = true
-log_requests  = false
-```
-
----
+- Model Context Protocol 1.0 over stdio (JSON-RPC 2.0), standard library
+  only, no extra dependencies
+- Eight read-only tools: system, battery, solar, and inverter status, single
+  device lookup, device list, alerts, and data age
+- `read_only = True` is hardcoded, not configurable
+- New `[mcp]` config section: `enabled`, `api_key`, `allowed_tools`,
+  `rate_limit`, `require_local`, `log_requests`; see CONFIG.md
+- API key is stripped from arguments before reaching tool functions; rate
+  limiting uses a sliding 60-second window; distinct JSON-RPC error codes for
+  unauthorized, forbidden, and rate limited
+- All logging goes to stderr; stdout is reserved for the protocol
 
 ### HTTPS dashboard server (`solar_monitor/server.py`)
-- Async HTTPS server running as an `asyncio.Task` inside the supervisor —
-  no separate process
-- Routes: `GET /` and `/dashboard.html` → HTML, `GET /state.json` → raw JSON,
-  `GET /health` → `200 OK` plaintext; all other paths and all non-GET methods
-  → 404
-- Auto-generates a self-signed RSA-2048 / SHA-256 certificate on first run:
-  10-year validity, SAN entries for localhost + 127.0.0.1 + configured host,
-  key written `chmod 600`
-- `ssl.TLSVersion.TLSv1_2` minimum enforced
-- 10-second read timeout per request; always closes connection after response
-- `ServerConfig` dataclass; all settings in `[server]` config section
-
-### New `[server]` config section
-```ini
-[server]
-enabled   = false
-host      = 0.0.0.0
-port      = 4443
-cert_file = server.crt
-key_file  = server.key
-auto_cert = true
-```
-
----
-
-### Supervisor architecture (`solar_monitor.py`)
-- New `solar_monitor.py` replaces the need to run two terminal sessions
-- `WorkerSpec` dataclass describes a worker: name, script, state section,
-  config sections (for auto-enable), interval key, min gap
-- `WORKER_REGISTRY` list — add one `WorkerSpec` to register a new data source
-- `WorkerProcess` manages one subprocess: launches with
-  `asyncio.create_subprocess_exec`, streams stdout/stderr with `[WorkerName]`
-  prefix, exponential backoff restarts (1 s → 2 s → 4 s → … → 60 s max),
-  abandons after `MAX_CRASHES_PER_HOUR = 10`
-- Workers auto-selected by scanning `config.ini` — `[bms]` section populated
-  → BMS worker starts; `[victron]` populated → Victron worker starts
-- `_dashboard_loop` runs as a separate `asyncio.Task` — writes HTML by merging
-  all state sections on a timer, independent of individual worker poll cycles
-- HTTPS server task started when `cfg.server.enabled`
-- `--list-workers` flag shows which workers would start without launching
-
-### Worker split (`bms_monitor.py`, `victron_monitor.py`)
-- Each worker is a standalone script satisfying the worker contract:
-  `--config FILE --state-file FILE --log-level LEVEL --once`
-- `--state-file` flag allows supervisor to set a shared path centrally
-- Both workers open `HistoryDB` on startup when history is enabled and call
-  `db.write_readings()` after each poll
-
----
-
-### Rich console dashboard (`console_monitor.py`)
-- Live terminal dashboard using Rich `Live` + `asyncio` — full-screen,
-  in-place update on every state file change
-- Mirrors HTML dashboard layout: aggregate row (MPPT | Inverter | Battery)
-  then individual device panels
-- Three aggregate panels: `_mppt_aggregate_panel`, `_inverter_aggregate_panel`,
-  `_battery_aggregate_panel` — totals, online counts, state summaries
-- Per-device panels: BMS (SoC bar, TTE/TTF, temps, faults, balance),
-  MPPT (PV W, yield, state), Inverter (AC out, state, alarms, battery V/A)
-- Colour coding: cyan (voltage), green (charging/online), yellow (PV/MPPT),
-  magenta (inverter), red (faults/offline), dim (labels)
-- File-watch via `os.path.getmtime()` — re-renders only when state file changes
-- `screen=True` in `Live` — terminal restored cleanly on Ctrl-C
-- Optional dependency — exits with clear message if `rich` not installed
-
----
+- Async HTTPS server running as an asyncio task inside the supervisor, no
+  separate process
+- Routes: `/` and `/dashboard.html` (HTML), `/state.json` (raw JSON),
+  `/health`; all other paths and non-GET methods return 404
+- Auto-generates a self-signed RSA-2048 certificate on first run (10-year
+  validity, SANs for localhost, 127.0.0.1, and the configured host, key
+  written chmod 600); TLS 1.2 minimum; 10-second read timeout per request
+- New `[server]` config section: `enabled`, `host`, `port`, `cert_file`,
+  `key_file`, `auto_cert`; see CONFIG.md
+- `AppConfig` gains `server` and `history` sections
 
 ### Mobile-first dashboard redesign (`solar_monitor/dashboard.py`)
-- Full CSS rewrite — mobile-first with five breakpoints:
-  - Base: single column, stacked aggregate cards, full-width everything
-  - 480 px: individual cards go 2-column; header meta text appears
-  - 600 px: aggregate cards go side-by-side; charts go 2-column
-  - 768 px: header/section padding increases; agg cards get full padding
-  - 900 px: individual cards switch to `auto-fill` grid
-  - 1200 px: charts go 4-column
-- Sticky header with `backdrop-filter:blur(12px)` — visible while scrolling
-- Fluid type with `clamp()` — aggregate numbers scale to viewport width
-- PWA meta tags: `apple-mobile-web-app-capable`,
-  `apple-mobile-web-app-status-bar-style`, `theme-color` (updated on theme
-  switch)
-- `safe-area-inset-bottom` — content above iPhone home indicator
-- `overscroll-behavior-y:contain` — no pull-to-refresh interference on Android
-- `min-height:44px` on theme button — Apple HIG touch target minimum
-- No horizontal scroll at any viewport width — removed all hard `min-width`
-  values causing overflow; replaced with `flex:1 1 220px` and `clamp()`
-- Chart improvements: `pointRadius:1`, `maxTicksLimit:6`, `maxRotation:0`,
-  timestamps trimmed to `HH:MM`
+- CSS rewritten mobile-first, scaling from a single-column phone layout up to
+  multi-column desktop grids
+- Five-number totals banner replaced with three aggregate cards (☀ MPPT,
+  ⚡ Inverter, 🔋 Battery): side by side on wide screens, stacked on narrow
+- Device cards split into labelled sections: MPPT Chargers, Inverters,
+  Battery Packs
+- Sticky blurred header, fluid type via `clamp()`, PWA meta tags, iPhone
+  safe-area inset, 44px touch targets, pull-to-refresh interference disabled
+- Removed hard min-widths so no viewport width scrolls horizontally
+- Chart rendering tweaks: smaller points, fewer axis ticks, HH:MM timestamps
 
-### New aggregate card layout
-- Replaced five-number totals banner with three rich aggregate cards:
-  `agg-mppt` (☀ MPPT), `agg-inv` (⚡ Inverter), `agg-bat` (🔋 Battery)
-- All three in a single `flex` container — side-by-side on wide screens,
-  stacked on narrow screens (`flex-direction:column` → `flex-direction:row`
-  at 600 px)
-- Individual device cards split into three labelled sections:
-  MPPT Chargers, Inverters, Battery Packs
+### Connection fixes
+- BMS direct MAC connection: `read_jbd_device()` accepts a MAC string or
+  `BLEDevice`, and `_poll_bms` passes the plain MAC to `BleakClient`. This
+  fixes `KeyError: 'path'` caused by synthetic `BLEDevice` objects; BlueZ
+  builds the D-Bus path from the MAC without a prior scan. `'path'` and
+  `keyerror` added to the transient error list as a safety net.
+- Victron passive scan: `VictronScanner.scan()` tries passive mode with
+  `OrPattern` (bleak 0.21+), then the raw-tuple form (bleak 0.20 and older),
+  then falls back to active scanning. The kernel-level filter matches Victron
+  company ID `0x02E1`. Any passive failure triggers the fallback, logged once
+  at WARNING with the actual exception.
 
----
+## 2026-05-28: Supervisor, worker split, console dashboard, VE.Bus support
 
-### BMS direct MAC connection fix
-- `read_jbd_device()` now accepts either a MAC address string or `BLEDevice`
-- `_poll_bms` passes `dc.mac` (plain string) directly to `BleakClient` —
-  eliminates `KeyError: 'path'` caused by synthetic `BLEDevice(mac, name, details={})`
-- BlueZ constructs the D-Bus path `/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF`
-  from the MAC string without requiring a prior scan
-- `"'path'"` and `"keyerror"` added to `_TRANSIENT_ERRORS` as a safety net
+### Supervisor (`solar_monitor.py`)
+- Single entry point replaces running two terminal sessions
+- `WorkerSpec` registry: add one entry to register a new data source
+- `WorkerProcess` launches each worker subprocess, prefixes its output with
+  the worker name, restarts with exponential backoff (1s doubling to 60s),
+  and abandons a worker after 10 crashes per hour
+- Workers auto-selected from `config.ini`: a populated `[bms]` section starts
+  the BMS worker, `[victron]` the Victron worker
+- Dashboard loop runs as its own task, merging all state sections on a timer
+  independent of worker poll cycles
+- `--list-workers` shows which workers would start without launching them
 
-### Victron passive scan improvements
-- `VictronScanner.scan()` now tries three modes in sequence before giving up:
-  1. `scanning_mode="passive"` + `OrPattern` objects (bleak ≥ 0.21)
-  2. `scanning_mode="passive"` + raw tuple `(0, 0xFF, b'\xe1\x02')` (bleak ≤ 0.20)
-  3. `scanning_mode="active"` — universal fallback, works on all platforms
-- `or_patterns` use Victron company ID `0x02E1` (AD type `0xFF`, LE bytes
-  `\xe1\x02`) — kernel-level filter so only Victron traffic is delivered
-- Any passive failure (not just specific error strings) triggers active fallback
-- Fallback logs at `WARNING` with the actual exception type and message;
-  silences after first cycle
+### Worker split (`bms_monitor.py`, `victron_monitor.py`)
+- Each worker is a standalone script with a common contract:
+  `--config FILE --state-file FILE --log-level LEVEL --once`
+- State file writes are atomic (write to `.tmp`, then `os.replace`), so
+  readers always see a complete file; `load_state` never raises on a
+  missing or corrupt file; `save_section` updates only the owning section,
+  preserving the other worker's data
 
----
+### Console dashboard (`console_monitor.py`)
+- Live full-screen terminal dashboard using Rich, re-rendered only when the
+  state file's mtime changes
+- Mirrors the HTML layout: aggregate row (MPPT, Inverter, Battery) plus
+  per-device panels with SoC bar, TTE/TTF, temps, faults, and alarms
+- Color-coded metrics; terminal restored cleanly on Ctrl-C
+- `rich` is optional; exits with a clear message if not installed
 
-### Package additions to `AppConfig`
-- `server: ServerConfig` — HTTPS server settings
-- `history: HistoryConfig` — SQLite history settings
-- `[server]` and `[history]` sections parsed in `load_config()`
+### VE.Bus Smart Dongle support
+- New `_parse_vebus` parser handles record types `0x07` and `0x0C`: device
+  state, VE.Bus error, battery current, voltage, and temperature, active AC
+  input, AC in/out power, alarm, and SoC
+- `0x0C` removed from `_RECORDS_WITH_STATE` (root cause of earlier
+  misparses); `_VALID_STATES` expanded to all known VE.Bus states; `0x0C`
+  tried before `0x07` in candidate order
+- Inverter-type readings below 9.0V rejected as implausible
+- `models.py`: added `ac_in_power_w`, `ac_in_source`, `vebus_error`,
+  `temperature_c`
+- Inverter card redesigned to match VictronConnect groupings: AC Output L1
+  (voltage hardcoded 120V, power from payload, current computed as P/120),
+  Battery (voltage, current, temperature), and a status row (state, AC in
+  source, alarm)
 
-### State file (`solar_monitor/state.py`)
-- Atomic write: `write to .tmp → os.replace` — readers always see a complete file
-- `load_state` returns empty dicts on missing/corrupt file, never raises
-- `save_section` updates only the owning section, preserving the other worker's data
-
----
-
-### Test suite
-- **783 tests**, all passing, no BLE hardware or browser required
-- Tests added / extended this audit:
-  - `normalise_mac`, `parse_bms_value`, `parse_mac_key` — config parsing helpers
-  - `_soc_color`, `_no_card` — dashboard utility functions
-  - `_resolve_date`, `_print_table` — query utility helpers
-  - `max_history` INI key loading
-  - `OrPattern` import path and fallback in `VictronScanner.scan()`
-- New test files:
-  - `tests/test_supervisor.py` — WorkerSpec, WorkerProcess, crash policy, dashboard loop, config detection (59 tests)
-  - `tests/test_console_monitor.py` — utility functions, all panels, `_render`, `_mtime` (80 tests)
-  - `tests/test_https_server.py` — cert generation, SSL context, routing, config, live bind (73 tests)
-  - `tests/test_mcp_server.py` — all 8 tools, security enforcement, dispatch, JSON-RPC (107 tests)
-  - `tests/test_history.py` — HistoryDB, config, schema, purge, retention, utilities (99 tests)
-
----
-
-## VE.Bus Smart Dongle full support
-
-### Dashboard
-- Inverter card redesigned to match VictronConnect label groupings exactly
-- **AC Output L1** section: Voltage (V) hardcoded 120V, Power (W) from payload,
-  Current (A) computed as P÷120
-- **Battery** section: Voltage (V), Current (A) raw signed, Temperature
-- Status row: STATE · AC In source · ALARM
-- Added `section-lbl` CSS class — thin divider line with uppercase label
-
-### victron.py — `_parse_vebus` (new)
-- New dedicated parser for record types `0x07` and `0x0C`
-- All 10 fields: device_state, vebus_error, battery_current (int16, 0.1A),
-  battery_voltage (uint14, 0.01V), active_ac_in (2-bit), ac_in_power (int19, 1W),
-  ac_out_power (int19, 1W), alarm (2-bit), battery_temperature (7-bit, raw−40),
-  soc (7-bit, NA=0x7F)
-- `PARSERS[0x07]` and `PARSERS[0x0C]` both wired to `_parse_vebus`
-- Root cause fix: `0x0C` removed from `_RECORDS_WITH_STATE`
-- `_VALID_STATES` expanded to all known VE.Bus states
-- Candidate sort order: `0x0C` (priority 1) tried before `0x07` (priority 9)
-- Voltage plausibility floor: inverter-type rejects `voltage_v < 9.0V`
-
-### models.py additions
-- `ac_in_power_w`, `ac_in_source`, `vebus_error`, `temperature_c`
-
----
-
-## Victron spec audit — all record types
-
-- `_parse_inverter` (0x03): voltage bug fixed (uint16 × 0.001V → int16 × 0.01V)
-- `_parse_bmv` (0x02): NA sentinel checked before sign extension
-- `_parse_dcenergy` (0x08/0x0D): same NA fix
-- `_parse_solar` (0x01): added `load_current_a` (9-bit, 0.1A, NA=0x1FF)
+### Victron parser audit (all record types)
+- `_parse_inverter` (0x03): voltage decoded as int16 at 0.01V resolution
+  (was uint16 at 0.001V)
+- `_parse_bmv` (0x02) and `_parse_dcenergy` (0x08/0x0D): NA sentinel checked
+  before sign extension
+- `_parse_solar` (0x01): added `load_current_a`
 - `_parse_inverter_rs` (0x06): restored missing `def` line
 - Per-candidate logging moved to DEBUG level
 
----
+### Package structure
+- Monolithic script refactored into the `solar_monitor/` package: `models`
+  (dataclasses), `config`, `jbd`, `victron` (parsers), `scanner`,
+  `dashboard`, `state`, `server`, and `history` modules
+- Test suite runs without BLE hardware or a browser
 
-## JBD / Vatrer BMS fault tolerance
+### Documentation
+- `MANUAL.md`: full manual covering installation, configuration, running as
+  a service, both dashboards, Victron and BMS setup, architecture, adding a
+  data source, troubleshooting, the HTTPS API, the MCP server, and history
+  storage
+- `CONFIG.md`: config file reference
+- `GUIDE.md`: quick-start guide
 
-- `asyncio.timeout(PER_DEVICE_TIMEOUT=35s)` prevents infinite hang
-- Buffer cleared on corrupt length byte in `_on_notify`
-- `_verify_checksum` added (warns, does not raise)
+## 2026-05-27: Initial release and BMS fault tolerance
+
+### JBD / Vatrer BMS fault tolerance
+- 35-second per-device timeout prevents infinite hangs
+- Notification buffer cleared on a corrupt length byte; checksum verification
+  added (warns rather than raises); payload length capped
 - NTC count capped to prevent index overflow
-- `_PERMANENT_ERRORS` checked first, no retry
-- Empty string removed from `_TRANSIENT_ERRORS`
-- `INTER_DEVICE_GAP=1.5s` between device connections
-- Constants: `READ_TIMEOUT=12s`, `NOTIFY_SETTLE_DELAY=1.0s`,
-  `PER_DEVICE_TIMEOUT=35s`, `MAX_PAYLOAD_LEN=128`
+- Permanent errors checked before transient ones, so they are not retried;
+  empty string removed from the transient error list
+- 1.5-second gap between device connections; read and settle timeouts made
+  explicit constants
 
----
-
-## Package structure
-
-Refactored from monolithic script to `solar_monitor/` Python package:
-
-| Module | Contents |
-|---|---|
-| `models.py` | `DeviceReading` dataclass |
-| `config.py` | `AppConfig`, INI/CLI parsing |
-| `jbd.py` | `JBDGattReader`, `read_jbd_device` |
-| `victron.py` | All parsers, `PARSERS` dispatch |
-| `scanner.py` | `VictronScanner`, `_poll_bms`, `poll_all` |
-| `dashboard.py` | `build_html`, all card renderers |
-| `state.py` | Atomic JSON state file I/O |
-| `server.py` | HTTPS server, cert generation, SSL context |
-| `history.py` | SQLite history store, `HistoryDB` |
-
----
-
-## Documentation
-
-- `MANUAL.md` — 2,321-line comprehensive manual, 17 sections:
-  Overview, Requirements, Installation, Configuration, Running, Service,
-  HTML Dashboard, Console Dashboard, Victron Setup, BMS Setup, Architecture,
-  Adding a Data Source, Troubleshooting, Reference, HTTPS Server & API,
-  MCP Server, Historical Data & SQLite Storage
-- `CONFIG.md` — config file reference
-- `GUIDE.md` — quick-start guide
+### Initial release
+- BLE polling for JBD BMS packs and Victron devices, HTML dashboard,
+  device scanning utility, license, and README

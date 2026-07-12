@@ -52,7 +52,9 @@ sys.modules.update({
     "bleak.backends": backends,
     "bleak.backends.device": device_mod,
 })
-sys.path.insert(0, "/home/claude")
+import os
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 from solar_monitor.scanner import (
     VictronScanner, _poll_bms, _poll_victron, poll_all,
@@ -559,7 +561,7 @@ class TestPollAll(unittest.TestCase):
 class TestArchitectureGuarantees(unittest.TestCase):
 
     def _src(self, name):
-        path = f"/home/claude/{name}"
+        path = f"{REPO_ROOT}/{name}"
         with open(path) as fh:
             return fh.read()
 

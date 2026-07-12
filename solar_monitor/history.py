@@ -1,5 +1,5 @@
 """
-solar_monitor/history.py — SQLite persistent history store
+solar_monitor/history.py - SQLite persistent history store
 ===========================================================
 Stores every DeviceReading written by a worker into a local SQLite database,
 providing long-term history independent of the in-memory rolling window used
@@ -66,7 +66,7 @@ _SCALAR_FIELDS: tuple[str, ...] = (
     "raw_load_indicator", "error_code", "error",
 )
 
-# List fields — serialised to JSON strings
+# List fields - serialised to JSON strings
 _LIST_FIELDS: tuple[str, ...] = ("temp_c", "faults", "balance_cells")
 
 _ALL_FIELDS = _SCALAR_FIELDS + _LIST_FIELDS
@@ -229,6 +229,14 @@ class HistoryDB:
             self._conn.close()
             self._conn = None
 
+    def _column_names(self) -> frozenset:
+        """Column names of the readings table, cached after first use."""
+        if not hasattr(self, "_columns"):
+            with self._lock:
+                rows = self._conn.execute("PRAGMA table_info(readings)").fetchall()
+            self._columns = frozenset(r["name"] for r in rows)
+        return self._columns
+
     # ── Write ─────────────────────────────────────────────────────────────────
 
     def write_readings(self, readings: list) -> int:
@@ -237,7 +245,7 @@ class HistoryDB:
 
         Returns the number of rows inserted.  Only successful readings are
         stored (those with ``error=None``).  Errors are logged but do not
-        raise — a failed write must never crash a worker.
+        raise - a failed write must never crash a worker.
         """
         if not readings:
             return 0
@@ -295,7 +303,18 @@ class HistoryDB:
         Returns:
             List of dicts, one per row.  Empty list if no matches or on error.
         """
+        # Validate identifier inputs here, not just at call sites: fields and
+        # order are interpolated into the SQL text and must never carry
+        # untrusted input through to sqlite.
+        order = order.upper()
+        if order not in ("ASC", "DESC"):
+            raise ValueError(f"order must be ASC or DESC, got {order!r}")
+
         if fields:
+            valid = self._column_names()
+            bad = [f for f in fields if f not in valid]
+            if bad:
+                raise ValueError(f"unknown field(s): {', '.join(bad)}")
             # Always include the key identity columns
             sel_cols = list(dict.fromkeys(
                 ["recorded_at", "device_name", "device_type"] + fields
@@ -473,7 +492,7 @@ class HistoryDB:
     def load_recent_for_dashboard(self, max_points: int = 600) -> dict:
         """
         Load the most recent readings for each device and return them in the
-        format expected by ``build_html`` — a dict of
+        format expected by ``build_html`` - a dict of
         ``{device_name: [{"timestamp": ..., "voltage_v": ..., ...}, ...]}``.
 
         Only the fields used by the dashboard charts are returned:

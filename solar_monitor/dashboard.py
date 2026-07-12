@@ -1,11 +1,11 @@
 """
-solar_monitor/dashboard.py — HTML dashboard rendering
+solar_monitor/dashboard.py - HTML dashboard rendering
 ======================================================
 Builds the self-contained HTML dashboard file from DeviceReading data.
 
 Layout (top to bottom):
   1. Header bar (brand, timestamp, theme toggle)
-  2. Aggregate cards row — MPPT totals, Inverter totals, Battery totals
+  2. Aggregate cards row - MPPT totals, Inverter totals, Battery totals
   3. Individual MPPT solar charger cards
   4. Individual Inverter cards
   5. Individual BMS pack cards
@@ -14,9 +14,11 @@ Layout (top to bottom):
 Three switchable colour themes: dark, light, business (localStorage persistence).
 """
 
+import html
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from .models import DeviceReading
@@ -39,9 +41,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0a0e17">
 <title>Solar Monitor</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>__CHARTJS__</script>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;600;800&family=Inter:wght@400;500;600;700&family=DM+Serif+Display&display=swap');
 
 /* ── Design tokens ── */
 :root {
@@ -454,15 +455,42 @@ def _fmt(v, decimals=2, suffix="") -> str:
     return f"{v:.{decimals}f}{suffix}" if v is not None else "—"
 
 
+_CHARTJS_PATH = Path(__file__).parent / "vendor" / "chart.umd.min.js"
+_chartjs_cache: Optional[str] = None
+
+
+def _chartjs() -> str:
+    """Vendored Chart.js source, loaded once. The dashboard must render
+    without internet access, so no CDN references are allowed."""
+    global _chartjs_cache
+    if _chartjs_cache is None:
+        try:
+            _chartjs_cache = _CHARTJS_PATH.read_text(encoding="utf-8")
+        except OSError as exc:
+            log.error(f"Vendored Chart.js missing ({exc}); charts disabled")
+            _chartjs_cache = ""
+    return _chartjs_cache
+
+
+def _esc(v) -> str:
+    """HTML-escape any value interpolated into markup.
+
+    Device names, error strings, and state labels originate outside this
+    module (config, BLE advertisements, exception text) and must never be
+    trusted as HTML.
+    """
+    return html.escape(str(v), quote=True)
+
+
 def render_bms_card(r: DeviceReading) -> str:
     badge = "error" if r.error else "ok"
     label = "OFFLINE" if r.error else "ONLINE"
     header = (f'<div class="card-header"><div><div class="type-pill bms">BMS</div>'
-              f'<div class="card-name">{r.name}</div>'
-              f'<div class="card-addr">{r.address}</div></div>'
+              f'<div class="card-name">{_esc(r.name)}</div>'
+              f'<div class="card-addr">{_esc(r.address)}</div></div>'
               f'<div class="badge {badge}">{label}</div></div>')
     if r.error:
-        body = f'<div class="error-msg">⚠ {r.error}</div>'
+        body = f'<div class="error-msg">⚠ {_esc(r.error)}</div>'
     else:
         soc = r.capacity_pct or 0
 
@@ -513,7 +541,7 @@ def render_bms_card(r: DeviceReading) -> str:
             dfet = '✓' if r.discharge_fet else '✗'
             info_parts.append(f'CHG {cfet} DSG {dfet}')
         if r.sw_version:
-            info_parts.append(f'fw {r.sw_version}')
+            info_parts.append(f'fw {_esc(r.sw_version)}')
         if info_parts:
             body += f'<div class="temps">{" &nbsp;·&nbsp; ".join(info_parts)}</div>'
 
@@ -524,7 +552,7 @@ def render_bms_card(r: DeviceReading) -> str:
 
         # ── Faults (only if active) ───────────────────────────────────────────
         if r.faults:
-            fault_str = ', '.join(r.faults)
+            fault_str = _esc(', '.join(r.faults))
             body += (f'<div class="temps" style="color:var(--red)">'
                      f'⚠ {fault_str}</div>')
 
@@ -557,14 +585,14 @@ def render_victron_card(r: DeviceReading) -> str:
 
     header = (f'<div class="card-header"><div>'
               f'<div class="type-pill {pill_cls}">{pill_text}</div>'
-              f'<div class="card-name">{r.name}</div>'
-              f'<div class="card-addr">{r.address}</div></div>'
+              f'<div class="card-name">{_esc(r.name)}</div>'
+              f'<div class="card-addr">{_esc(r.address)}</div></div>'
               f'<div class="badge {badge}">{badge_label}</div></div>')
 
     if r.error and not partial:
-        body = f'<div class="error-msg">⚠ {r.error}</div>'
+        body = f'<div class="error-msg">⚠ {_esc(r.error)}</div>'
     else:
-        err_note = f'<div class="error-msg" style="margin-top:8px">⚠ {r.error}</div>' if r.error else ""
+        err_note = f'<div class="error-msg" style="margin-top:8px">⚠ {_esc(r.error)}</div>' if r.error else ""
 
         if r.device_type == "inverter":
             # Complete alarm bitmask per Victron spec (used for 0x03/0x07 records)
@@ -576,9 +604,9 @@ def render_victron_card(r: DeviceReading) -> str:
                 12: "Short Circuit", 13: "BMS Lockout",
             }
 
-            state_str = r.inverter_state or "—"
+            state_str = _esc(r.inverter_state) if r.inverter_state else "—"
 
-            # ── VE.Bus Smart Dongle — layout matches VictronConnect labels ────
+            # ── VE.Bus Smart Dongle - layout matches VictronConnect labels ────
             if r.inverter_state is not None and (
                     r.ac_in_source is not None or r.ac_out_power_va is not None):
 
@@ -601,9 +629,9 @@ def render_victron_card(r: DeviceReading) -> str:
 
                 # Status row
                 temp_str   = f"{r.temperature_c}°C" if r.temperature_c is not None else "—"
-                alarm_str  = r.alarm_reason or "None"
+                alarm_str  = _esc(r.alarm_reason) if r.alarm_reason else "None"
                 alarm_color = "var(--red)" if r.alarm_reason else "var(--green)"
-                ac_in_src  = r.ac_in_source or "—"
+                ac_in_src  = _esc(r.ac_in_source) if r.ac_in_source else "—"
 
                 body = (
                     # ── AC OUTPUT L1 ──────────────────────────────────────────
@@ -704,7 +732,7 @@ def render_victron_card(r: DeviceReading) -> str:
                     f'<div class="metric"><div class="metric-val a">{_fmt(r.current_a,3)}</div><div class="metric-lbl">Batt A</div></div>'
                     f'<div class="metric"><div class="metric-val pv">{_fmt(r.pv_power_w,1)}</div><div class="metric-lbl">PV W</div></div>'
                     f'</div><div class="state-row">'
-                    f'<div class="state-kv"><span class="state-k">STATE</span><span class="state-v">{r.charger_state or "—"}</span></div>'
+                    f'<div class="state-kv"><span class="state-k">STATE</span><span class="state-v">{_esc(r.charger_state) if r.charger_state else "—"}</span></div>'
                     f'<div class="state-kv"><span class="state-k">YIELD</span><span class="state-v">{_fmt(r.yield_today_wh,0)} Wh</span></div>'
                     + (f'<div class="state-kv"><span class="state-k">LOAD</span><span class="state-v">{load_str}</span></div>' if load_str else '')
                     + (f'<div class="state-kv"><span class="state-k">ERR</span><span class="state-v">{r.error_code}</span></div>' if r.error_code else '')
@@ -714,15 +742,15 @@ def render_victron_card(r: DeviceReading) -> str:
 
 
 def _no_card(msg: str) -> str:
-    return f'<div class="no-card">{msg}</div>'
+    return f'<div class="no-card">{_esc(msg)}</div>'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Aggregate cards — one per system category, shown at top of dashboard
+# Aggregate cards - one per system category, shown at top of dashboard
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_mppt_aggregate_card(mppt_readings: list) -> str:
-    """MPPT aggregate — total PV power in, yield today, charger states."""
+    """MPPT aggregate - total PV power in, yield today, charger states."""
     ok = [r for r in mppt_readings
           if not r.error and r.device_type == "mppt"]
 
@@ -735,7 +763,7 @@ def render_mppt_aggregate_card(mppt_readings: list) -> str:
     for r in ok:
         s = r.charger_state or "Unknown"
         states[s] = states.get(s, 0) + 1
-    state_str = "  ·  ".join(f"{n}× {s}" for s, n in sorted(states.items())) or "—"
+    state_str = "  ·  ".join(f"{n}× {_esc(s)}" for s, n in sorted(states.items())) or "—"
 
     pv_str = _fmt(total_pv, 1)
     yld_str = _fmt(total_yield, 0)
@@ -763,7 +791,7 @@ def render_mppt_aggregate_card(mppt_readings: list) -> str:
 
 
 def render_inverter_aggregate_card(mppt_readings: list) -> str:
-    """Inverter aggregate — total AC out, states, alarms."""
+    """Inverter aggregate - total AC out, states, alarms."""
     ok = [r for r in mppt_readings
           if not r.error and r.device_type == "inverter"]
 
@@ -775,7 +803,7 @@ def render_inverter_aggregate_card(mppt_readings: list) -> str:
     for r in ok:
         s = r.inverter_state or "Unknown"
         states[s] = states.get(s, 0) + 1
-    state_str = "  ·  ".join(f"{n}× {s}" for s, n in sorted(states.items())) or "—"
+    state_str = "  ·  ".join(f"{n}× {_esc(s)}" for s, n in sorted(states.items())) or "—"
 
     alarms = [r for r in ok if r.alarm_reason and r.alarm_reason not in (None, 0, "None")]
     alarm_str   = f"{len(alarms)} alarm(s)" if alarms else "None"
@@ -806,7 +834,7 @@ def render_inverter_aggregate_card(mppt_readings: list) -> str:
 
 
 def render_battery_aggregate_card(bms_readings: list) -> str:
-    """Battery aggregate — avg SoC bar, total Wh remaining, total Ah, packs online."""
+    """Battery aggregate - avg SoC bar, total Wh remaining, total Ah, packs online."""
     ok = [r for r in bms_readings if not r.error and r.capacity_pct is not None]
     total  = len(bms_readings)
     online = len(ok)
@@ -863,9 +891,9 @@ def build_html(bms_readings: list, mppt_readings: list, history: dict, theme: st
     Render the complete HTML dashboard as a string.
 
     Layout (top to bottom):
-      1. MPPT aggregate card  — total PV W, yield today, charger states
-      2. Inverter aggregate card — total AC out W, states, alarms
-      3. Battery aggregate card  — avg SoC bar, total Wh/Ah, net amps, pack count
+      1. MPPT aggregate card  - total PV W, yield today, charger states
+      2. Inverter aggregate card - total AC out W, states, alarms
+      3. Battery aggregate card  - avg SoC bar, total Wh/Ah, net amps, pack count
       4. Individual MPPT charger cards
       5. Individual Inverter cards
       6. Individual BMS pack cards
@@ -916,6 +944,12 @@ def build_html(bms_readings: list, mppt_readings: list, history: dict, theme: st
             .replace("__INV_CARDS__",    inv_cards)
             .replace("__BMS_CARDS__",    bms_cards)
             .replace("__SERVER_THEME__", theme)
-            .replace("__HISTORY_JSON__", json.dumps(history, indent=2)))
+            # "</" must not appear inside a <script> block: a device name
+            # containing "</script>" would otherwise terminate the tag and
+            # inject markup.  JSON semantics are unchanged by the escape.
+            .replace("__HISTORY_JSON__",
+                     json.dumps(history, indent=2).replace("</", "<\\/"))
+            # Inject last so placeholder replacement never scans the JS bundle
+            .replace("__CHARTJS__", _chartjs()))
 
 

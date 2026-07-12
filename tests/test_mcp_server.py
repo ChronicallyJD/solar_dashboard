@@ -32,10 +32,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, "/home/claude")
+import os
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 import importlib.util
-_spec = importlib.util.spec_from_file_location("mcp_server", "/home/claude/mcp_server.py")
+_spec = importlib.util.spec_from_file_location("mcp_server", f"{REPO_ROOT}/mcp_server.py")
 ms = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ms)
 
@@ -861,7 +863,7 @@ class TestSecurityEnforcement(unittest.TestCase):
 class TestSourceGuarantees(unittest.TestCase):
 
     def _src(self) -> str:
-        with open("/home/claude/mcp_server.py") as f:
+        with open(f"{REPO_ROOT}/mcp_server.py") as f:
             return f.read()
 
     def test_all_eight_tools_registered(self):

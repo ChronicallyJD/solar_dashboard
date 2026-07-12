@@ -1,6 +1,6 @@
-# Solar Monitor — Complete Manual
+# Solar Monitor: Complete Manual
 
-**Version:** 2025-01 · **Hardware tested:** Raspberry Pi 4, Ubuntu 24.04 LTS
+**Hardware tested:** Raspberry Pi 4, Ubuntu 24.04 LTS
 
 ---
 
@@ -20,10 +20,10 @@
 12. [Adding a New Data Source](#12-adding-a-new-data-source)
 13. [Troubleshooting](#13-troubleshooting)
 14. [Reference](#14-reference)
-15. [HTTPS Dashboard Server](#15-https-dashboard-server)
+15. [HTTPS Dashboard Server & API](#15-https-dashboard-server--api)
 16. [MCP Server](#16-mcp-server)
 17. [Historical Data & SQLite Storage](#17-historical-data--sqlite-storage)
-18. [Utils — Management Utilities](#18-utils--management-utilities)
+18. [Utils: Management Utilities](#18-utils-management-utilities)
 
 ---
 
@@ -45,11 +45,11 @@ live Rich terminal dashboard. No cloud, no app, no internet access required.
 
 **Key design decisions**
 
-- **No GATT scanning for BMS** — connects directly by MAC address. BlueZ builds the D-Bus path from the MAC itself; no prior scan required.
-- **Passive BLE scanning for Victron** — the adapter listens but never sends scan requests, with automatic fallback to active scanning.
-- **Supervisor process** — a single `solar_monitor.py` manages all worker subprocesses, restarts crashed workers, and writes the dashboard independently.
-- **Shared state file** — workers communicate through an atomic JSON file; no sockets, no shared memory.
-- **Dual display modes** — HTML dashboard (browser) and Rich console dashboard (terminal).
+- **No GATT scanning for BMS**: connects directly by MAC address. BlueZ builds the D-Bus path from the MAC itself; no prior scan required.
+- **Passive BLE scanning for Victron**: the adapter listens but never sends scan requests, with automatic fallback to active scanning.
+- **Supervisor process**: a single `solar_monitor.py` manages all worker subprocesses, restarts crashed workers, and writes the dashboard independently.
+- **Shared state file**: workers communicate through an atomic JSON file; no sockets, no shared memory.
+- **Dual display modes**: HTML dashboard (browser) and Rich console dashboard (terminal).
 
 ---
 
@@ -59,20 +59,15 @@ live Rich terminal dashboard. No cloud, no app, no internet access required.
 
 - **Linux host** with Bluetooth: Raspberry Pi 3B+/4/5, any x86 Linux box
 - **BlueZ** 5.50 or later (`bluetoothctl --version`)
-- Devices within **BLE range** — roughly 10 m line-of-sight
+- Devices within **BLE range** (roughly 10 m line-of-sight)
 
 ### Python
 
 - **Python 3.11 or later** (`python3 --version`)
-- **bleak** ≥ 0.20 — BLE library (required)
-- **cryptography** — Victron AES-128-CTR decryption (required)
-- **rich** — terminal dashboard (optional; only needed for `console_monitor.py`)
-- **No extra dependencies for MCP** — `mcp_server.py` uses only the standard library
-
-```bash
-pip install bleak cryptography       # required
-pip install rich                     # optional — console dashboard only
-```
+- **bleak** ≥ 0.20: BLE library (required)
+- **cryptography**: Victron AES-128-CTR decryption (required)
+- **rich**: terminal dashboard (optional; only needed for `console_monitor.py`)
+- **MCP**: no extra packages; `mcp_server.py` uses only the standard library plus the existing `solar_monitor` package
 
 ### Supported Victron devices
 
@@ -86,23 +81,23 @@ pip install rich                     # optional — console dashboard only
 
 ### Supported BMS
 
-JBD protocol packs — Vatrer, Overkill Solar, Redodo, Chins, Enjoybot, and generic JBD-based units.
+JBD protocol packs: Vatrer, Overkill Solar, Redodo, Chins, Enjoybot, and generic JBD-based units.
 
 ---
 
 ## 3. Installation
 
-### 3.1 Extract the archive
+### 3.1 Clone the repository
 
 ```bash
-tar -xzf solar_monitor.tar.gz
-cd solar_monitor
+git clone https://github.com/ChronicallyJD/solar_dashboard.git
+cd solar_dashboard
 ```
 
 Directory structure:
 
 ```
-solar_monitor/
+solar_dashboard/
 ├── solar_monitor.py        ← Supervisor (recommended entry point)
 ├── bms_monitor.py          ← BMS worker (can run standalone)
 ├── victron_monitor.py      ← Victron worker (can run standalone)
@@ -110,28 +105,29 @@ solar_monitor/
 ├── mcp_server.py           ← MCP server for AI assistant integration
 ├── jbd_bms_monitor.py      ← Combined legacy launcher
 ├── config.ini.example      ← Annotated configuration template
+├── CONFIG.md               ← Configuration reference
 ├── MANUAL.md               ← This file
 ├── solar_monitor/          ← Python package
-│   ├── scanner.py          ← BLE scanning, VictronScanner
-│   ├── jbd.py              ← JBD/Vatrer BMS protocol
-│   ├── victron.py          ← Victron BLE protocol and parsers
+│   ├── scanner.py          ← BLE scanning, VictronScanner, _poll_bms
+│   ├── jbd.py              ← JBD/Vatrer BMS protocol: GATT, packet parsing
+│   ├── victron.py          ← Victron protocol: decryption, all parsers
 │   ├── dashboard.py        ← HTML dashboard generation
 │   ├── state.py            ← Atomic JSON state file I/O
-│   ├── config.py           ← AppConfig, INI loading
+│   ├── config.py           ← AppConfig, INI loading, CLI overrides
 │   ├── models.py           ← DeviceReading dataclass
-│   ├── server.py           ← HTTPS server, cert generation
-│   └── history.py          ← SQLite persistent history store
+│   ├── server.py           ← HTTPS server, cert generation, SSL context
+│   └── history.py          ← SQLite history store, HistoryDB, retention
 ├── utils/                  ← Server-side management utilities
 │   ├── purge_history.py    ← Delete history by date range / device
 │   └── query_history.py    ← Query and export history as CSV / JSON
-└── tests/                  ← 765 unit tests
+└── tests/                  ← Unit tests
 ```
 
 ### 3.2 Install Python dependencies
 
 ```bash
 pip install bleak cryptography       # required for all modes
-pip install rich                     # optional — console dashboard only
+pip install rich                     # optional: console dashboard only
 ```
 
 ### 3.3 Bluetooth permissions
@@ -163,12 +159,16 @@ python3 solar_monitor.py --config config.ini
 
 ```bash
 python3 -m unittest discover -s tests -v
-# Expected: 783 tests, 0 failures (runs without BLE hardware or browser)
 ```
+
+The test suite runs without BLE hardware or a browser.
 
 ---
 
 ## 4. Configuration
+
+See `CONFIG.md` for the complete annotated configuration reference, including
+the `[server]`, `[mcp]`, and `[history]` sections.
 
 ### 4.1 `[general]`
 
@@ -190,7 +190,7 @@ theme            = business            # dark / light / business
 |---|---|---|---|
 | `bms_interval` | 30 s | 120 s | BMS GATT connection takes 5–35 s per pack |
 | `victron_interval` | 10 s | 30 s | Passive scan, very fast |
-| `scan_timeout` | — | 10 s | Long enough to catch all Victron record types |
+| `scan_timeout` | none | 10 s | Long enough to catch all Victron record types |
 
 ### 4.2 `[bms]`
 
@@ -214,28 +214,6 @@ South Array  = 11:22:33:44:55:01 : aabbccddeeff00112233445566778899  type=mppt
 MultiPlus    = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverter
 ```
 
-### 4.4 Complete annotated example
-
-```ini
-[general]
-output           = /var/www/html/solar.html
-state_file       = solar_state.json
-bms_interval     = 120
-victron_interval = 30
-scan_timeout     = 10
-max_history      = 600
-log_level        = INFO
-theme            = business
-
-[bms]
-House Bank = A1:B2:C3:D4:E5:F6 : 123456
-
-[victron]
-South Array = 11:22:33:44:55:01 : aabbccddeeff00112233445566778899  type=mppt
-West Array  = 11:22:33:44:55:02 : 00112233445566778899aabbccddeeff  type=mppt
-MultiPlus   = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverter
-```
-
 ---
 
 ## 5. Running the Monitor
@@ -246,8 +224,7 @@ MultiPlus   = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverte
 python3 solar_monitor.py --config config.ini
 ```
 
-Workers are started automatically based on populated config sections. Use
-`--list-workers` to see what would start without launching.
+Workers are started automatically based on populated config sections.
 
 | Flag | Description |
 |---|---|
@@ -298,7 +275,7 @@ Wants=bluetooth.target
 [Service]
 Type=simple
 User=pi
-WorkingDirectory=/home/pi/solar_monitor
+WorkingDirectory=/home/pi/solar_dashboard
 ExecStart=/usr/bin/python3 solar_monitor.py --config config.ini
 ExecStartPre=/bin/sleep 5
 ExecStartPre=/usr/bin/bluetoothctl power on
@@ -325,7 +302,7 @@ journalctl -u solar-monitor -f
 ```nginx
 server {
     listen 80;
-    root /home/pi/solar_monitor;
+    root /home/pi/solar_dashboard;
     location / {
         try_files $uri $uri/ =404;
         add_header Cache-Control "no-cache";
@@ -333,7 +310,7 @@ server {
 }
 ```
 
-Set `output = /home/pi/solar_monitor/dashboard.html` in config.ini,
+Set `output = /home/pi/solar_dashboard/dashboard.html` in config.ini,
 then browse to `http://your-pi-ip/dashboard.html`.
 
 ### 6.3 Console dashboard as a service
@@ -343,7 +320,7 @@ To run the console dashboard in a persistent `tmux` or `screen` session:
 ```bash
 # In a tmux session
 tmux new-session -d -s solar-console \
-  'python3 /home/pi/solar_monitor/console_monitor.py --config config.ini'
+  'python3 /home/pi/solar_dashboard/console_monitor.py --config config.ini'
 
 # Attach later
 tmux attach -t solar-console
@@ -360,7 +337,7 @@ Refresh the page to see updated readings.
 
 The dashboard is divided into three zones from top to bottom:
 
-**Zone 1 — System Overview (aggregate cards)**
+**Zone 1: System Overview (aggregate cards)**
 
 Three cards side-by-side in a single flex row:
 
@@ -372,15 +349,15 @@ Three cards side-by-side in a single flex row:
 
 On narrow screens the cards wrap automatically; on wide screens they always sit side by side.
 
-**Zone 2 — Individual device cards**
+**Zone 2: Individual device cards**
 
 Three grouped sections, each showing one card per configured device:
 
-1. **MPPT Chargers — Individual** — one card per solar charger
-2. **Inverters — Individual** — one card per VE.Bus dongle or inverter
-3. **Battery Packs — Individual** — one card per JBD/Vatrer BMS pack
+1. **MPPT Chargers — Individual**: one card per solar charger
+2. **Inverters — Individual**: one card per VE.Bus dongle or inverter
+3. **Battery Packs — Individual**: one card per JBD/Vatrer BMS pack
 
-**Zone 3 — Historical charts**
+**Zone 3: Historical charts**
 
 Four Chart.js sparklines: Battery Voltage, Battery Current, PV Power, State of Charge.
 
@@ -401,7 +378,7 @@ is remembered in `localStorage` across page loads.
 
 **Main metrics:** Pack voltage (V) · Current (A, signed) · Power (W)
 
-**SoC bar:** Colour-coded — green ≥ 60%, yellow 30–59%, red < 30%.
+**SoC bar:** Colour-coded: green ≥ 60%, yellow 30–59%, red < 30%.
 Shows remaining Wh inline.
 
 **Capacity:** `84.0 / 100.0 Ah` · `TTE 5h36m` (time to empty) · `TTF 1h12m` (time to full)
@@ -436,7 +413,7 @@ Battery V · Current A · SoC % (with bar) · Time to go
 
 `console_monitor.py` renders the same data as the HTML dashboard directly in
 the terminal, using the Rich library for live in-place updates. It is
-**read-only** — it never writes to the state file.
+read-only: it never writes to the state file or any other file.
 
 ### 8.1 Installation
 
@@ -447,23 +424,15 @@ pip install rich
 ### 8.2 Usage
 
 ```bash
-# With a config file (reads state_file path from it)
 python3 console_monitor.py --config config.ini
-
-# With an explicit state file path
-python3 console_monitor.py --state-file solar_state.json
-
-# Faster polling (checks for new data every second)
-python3 console_monitor.py --config config.ini --interval 1
-
 # Press Ctrl-C to exit cleanly
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--config FILE` | — | Config file (reads `state_file` path from it) |
+| `--config FILE` | none | Config file (reads `state_file` path from it) |
 | `--state-file FILE` | `solar_state.json` | State file path (overrides config) |
-| `--interval SECS` | `2` | How often to check for new data |
+| `--interval SECS` | `2` | How often to check for new data (e.g. `--interval 1` for faster polling) |
 
 ### 8.3 Display layout
 
@@ -501,14 +470,13 @@ changes. The terminal is restored cleanly on exit.
 ### 8.4 How updates work
 
 The console monitor watches the state file's modification time using
-`os.path.getmtime()`. When either `bms_monitor.py` or `victron_monitor.py`
-writes new data, the mtime changes and the console re-renders immediately
-on its next check (up to `--interval` seconds).
+`os.path.getmtime()`. When either worker writes new data, the mtime changes
+and the console re-renders on its next check (up to `--interval` seconds).
 
 ### 8.5 Running alongside the supervisor
 
-The console monitor is a passive viewer — it never writes to any file.
-Run it in a second terminal while the supervisor is running:
+Because the console monitor is read-only, it can run in a second terminal
+while the supervisor is running:
 
 ```bash
 # Terminal 1: supervisor
@@ -520,14 +488,14 @@ python3 console_monitor.py --config config.ini
 
 ### 8.6 Colour coding
 
-| Colour | Meaning |
-|---|---|
-| Cyan | Voltage values, battery aggregate |
-| Green | Current (charging), online status, SoC ≥ 60% |
-| Yellow | MPPT / solar data, SoC 30–60% |
-| Magenta | Inverter / VE.Bus data, yield |
-| Red | Errors, faults, alarms, SoC < 30% |
-| Dim | Labels, metadata, muted info |
+| Colour | Rich style | Used for |
+|---|---|---|
+| Cyan | `bright_cyan` | Voltage values, battery aggregate |
+| Green | `bright_green` | Current (charging), online status, SoC ≥ 60% |
+| Yellow | `yellow` | MPPT / solar data, PV power, SoC 30–59% |
+| Magenta | `bright_magenta` | Inverter / VE.Bus data, yield today |
+| Red | `bright_red` | Errors, faults, alarms, SoC < 30% |
+| Dim | `bright_black` | Labels, metadata, muted info |
 
 ---
 
@@ -538,7 +506,7 @@ python3 console_monitor.py --config config.ini
 1. Open **VictronConnect** → connect to device → ⚙️ gear → **Product Info**
 2. Enable **Instant Readout via Bluetooth**
 3. Tap **Show** → copy the 32-character Advertisement Key
-4. Note the MAC address (iOS shows UUID — use Android or `bluetoothctl` for the real MAC)
+4. Note the MAC address (iOS shows a UUID; use Android or `bluetoothctl` for the real MAC)
 
 ### 9.2 VE.Bus Smart Dongle (MultiPlus-II)
 
@@ -576,13 +544,8 @@ Or use nRF Connect (Android) or LightBlue (iOS).
 
 ### 10.2 Password
 
-Factory default is usually `123456`. Omit the colon entirely if no password:
-
-```ini
-[bms]
-House Bank = A1:B2:C3:D4:E5:F6 : 123456
-Spare Pack = A1:B2:C3:D4:E5:F7
-```
+Factory default is usually `123456`. Omit the ` : password` part entirely if
+the pack has no password (see the `[bms]` examples in Section 4.2).
 
 ### 10.3 Verifying BMS connectivity
 
@@ -615,7 +578,7 @@ console_monitor.py (optional, read-only)
 
 | Device type | Strategy | Why |
 |---|---|---|
-| BMS | `BleakClient(mac_string)` — direct GATT | No scan needed; BlueZ constructs D-Bus path from MAC |
+| BMS | Direct GATT via `BleakClient(mac_string)` | No scan needed; BlueZ constructs D-Bus path from MAC |
 | Victron | `BleakScanner` passive + or_patterns | Advertisement protocol; device broadcasts continuously |
 
 Passive scanning requires BlueZ `or_patterns` (AD type 0xFF, Victron company ID 0x02E1).
@@ -668,48 +631,42 @@ In `state.py`: add `"ecoflow"` to the section loop in `load_state()`.
 
 ### 13.1 Supervisor / startup
 
-**`No workers to start`** — all config sections empty. Check that `[bms]` or `[victron]`
+**`No workers to start`**: all config sections empty. Check that `[bms]` or `[victron]`
 have uncommented device lines.
 
 ### 13.2 BMS issues
 
-**`ERROR — 'path'`** — old bug (synthetic BLEDevice with empty details). Update to current version; `BleakClient` is now called with the MAC string directly.
+**`ERROR - 'path'`**: old bug (synthetic BLEDevice with empty details). Update to current version; `BleakClient` is now called with the MAC string directly.
 
-**`TIMEOUT (35s)`** — device out of range, or another app has an open GATT connection.
+**`TIMEOUT (35s)`**: device out of range, or another app has an open GATT connection.
 
-**`BMS rejected password`** — wrong password. Try `000000`, `123456`, `888888`.
+**`BMS rejected password`**: wrong password. Try `000000`, `123456`, `888888`.
 
-**`BMS checksum mismatch`** — transient RF interference. Data is still used.
+**`BMS checksum mismatch`**: transient RF interference. Data is still used.
 
 ### 13.3 Victron issues
 
-**`Device not seen during scan`** — out of range, Instant Readout not enabled, wrong MAC.
+**`Device not seen during scan`**: out of range, Instant Readout not enabled, wrong MAC.
 
-**`passive scan unavailable … using active scanning`** — not an error. Active scanning works identically for Victron. The log message tells you exactly why passive failed.
+**`passive scan unavailable … using active scanning`**: not an error. Active scanning works identically for Victron. The log message tells you exactly why passive failed.
 
-**`no candidate payload decrypted successfully`** — wrong Advertisement Key.
+**`no candidate payload decrypted successfully`**: wrong Advertisement Key.
 
 ### 13.4 Console dashboard issues
 
-**`ERROR: the 'rich' library is required`** — install with `pip install rich`.
+**`ERROR: the 'rich' library is required`**: install with `pip install rich`.
 
-**Display is garbled or too narrow** — make your terminal window wider. The console
+**Display is garbled or too narrow**: make your terminal window wider. The console
 monitor renders best at 140+ columns. Resize the window and the display adjusts on the next refresh.
 
-**Data not updating** — check that the supervisor is running and writing to the state file:
+**Data not updating**: check that the supervisor is running and writing to the state file:
 ```bash
 ls -la solar_state.json    # watch modification time
 ```
 
-### 13.5 Running the test suite
+### 13.5 Test coverage
 
-```bash
-cd /path/to/solar_monitor
-python3 -m unittest discover -s tests -v
-# Expected: 783 tests, 0 failures — no BLE hardware or browser needed
-```
-
-**Test files and what they cover:**
+Run the test suite as shown in Section 3.6. Coverage by file:
 
 | File | Tests | Coverage |
 |---|---|---|
@@ -755,67 +712,14 @@ python3 -m unittest discover -s tests -v
 
 ### 14.3 File summary
 
-| File | Purpose |
-|---|---|
-| `solar_monitor.py` | Supervisor — manages workers, writes dashboard |
-| `bms_monitor.py` | BMS worker — direct GATT by MAC |
-| `victron_monitor.py` | Victron worker — passive BLE scan |
-| `console_monitor.py` | Rich terminal dashboard (read-only) |
-| `jbd_bms_monitor.py` | Legacy combined launcher |
-| `solar_monitor/scanner.py` | BLE scanning, VictronScanner, _poll_bms |
-| `solar_monitor/jbd.py` | JBD protocol: GATT, packet parsing |
-| `solar_monitor/victron.py` | Victron protocol: decryption, all parsers |
-| `solar_monitor/dashboard.py` | HTML dashboard generation |
-| `solar_monitor/state.py` | Atomic JSON state file I/O |
-| `solar_monitor/config.py` | AppConfig, INI loading, CLI overrides |
-| `solar_monitor/models.py` | DeviceReading dataclass |
-| `solar_monitor/server.py` | HTTPS server, cert generation, SSL context |
-| `tests/test_solar_monitor.py` | JBD/Victron protocol + dashboard tests |
-| `tests/test_split_process.py` | State file + split-process tests |
-| `tests/test_ble_resilience.py` | VictronScanner, BLE resilience tests |
-| `tests/test_supervisor.py` | Supervisor: WorkerSpec, WorkerProcess tests |
-| `tests/test_console_monitor.py` | Rich console dashboard tests |
-| `tests/test_https_server.py` | HTTPS server, cert, routing, config tests |
-| `mcp_server.py` | MCP server — AI assistant integration, 8 tools |
-| `solar_monitor/history.py` | SQLite history store, HistoryDB, retention |
-| `utils/purge_history.py` | CLI utility: purge history by date/device |
-| `utils/query_history.py` | CLI utility: query and export history as CSV/JSON |
-| `tests/test_history.py` | History DB, config, retention, purge, utils tests |
-| `tests/test_mcp_server.py` | MCP server: tools, security, dispatch tests |
+See the annotated directory structure in Section 3.1 for the purpose of each
+file, and Section 13.5 for the test files and what they cover.
 
-### 14.4 Config quick reference
+### 14.4 Config reference
 
-```ini
-[general]
-output           = dashboard.html   # HTML output path
-state_file       = solar_state.json # Worker IPC file
-bms_interval     = 120              # BMS poll (s)
-victron_interval = 30               # Victron poll (s)
-scan_timeout     = 10               # BLE scan window (s)
-max_history      = 600              # Chart points per device
-log_level        = INFO             # DEBUG/INFO/WARNING/ERROR
-theme            = business         # dark/light/business
-
-[bms]
-Label = MAC [ : password ]
-
-[victron]
-Label = MAC : 32-char-key  [ type=mppt|inverter|monitor|dcdc ]
-
-[history]
-enabled              = false           # enable SQLite history
-db_path              = solar_history.db  # database file path
-retention_days       = 1095              # 3 years (0 = keep forever)
-vacuum_interval_days = 7                 # VACUUM frequency
-
-[mcp]
-enabled       = true            # start MCP server
-api_key       =                 # bearer token (empty = no auth)
-allowed_tools =                 # comma-separated whitelist (empty = all)
-rate_limit    = 60              # requests/minute (0 = unlimited)
-require_local = true            # loopback only (stdio: informational)
-log_requests  = false           # log every tool call to stderr
-```
+See `CONFIG.md` for the full annotated configuration reference. Feature-specific
+sections are documented where the feature is: `[server]` in Section 15.2,
+`[mcp]` in Section 16.3, `[history]` in Section 17.2.
 
 ### 14.5 Victron record types
 
@@ -833,24 +737,15 @@ log_requests  = false           # log every tool call to stderr
 
 ### 14.6 Console dashboard colour reference
 
-| Colour | Rich style | Used for |
-|---|---|---|
-| Cyan | `bright_cyan` | Voltage, battery aggregate |
-| Green | `bright_green` | Charging current, online, SoC ≥ 60% |
-| Yellow | `yellow` | PV power, MPPT data, SoC 30–59% |
-| Magenta | `bright_magenta` | Inverter output, yield today |
-| Red | `bright_red` | Errors, faults, alarms, SoC < 30% |
-| Dim grey | `bright_black` | Labels, metadata |
+See Section 8.6.
 
 ---
 
 ## 15. HTTPS Dashboard Server & API
 
-Solar Monitor includes a built-in HTTPS server. It serves the live HTML
-dashboard and a JSON API over TLS — no nginx, no separate web server
-required. The server runs as an `asyncio` task inside the supervisor process.
-
----
+Solar Monitor includes a built-in HTTPS server that serves the live HTML
+dashboard and a JSON API over TLS; no nginx or separate web server required.
+The server runs as an `asyncio` task inside the supervisor process.
 
 ### 15.1 Quick start
 
@@ -871,8 +766,6 @@ python3 solar_monitor.py --config config.ini
 Your browser will warn about the self-signed certificate on first visit.
 See Section 15.5 to trust it permanently.
 
----
-
 ### 15.2 Configuration reference
 
 All settings live in the `[server]` section of `config.ini`.
@@ -884,33 +777,7 @@ All settings live in the `[server]` section of `config.ini`.
 | `port` | integer | `4443` | Port to listen on. Ports < 1024 require root |
 | `cert_file` | path | `server.crt` | TLS certificate (PEM). Auto-generated if missing and `auto_cert = true` |
 | `key_file` | path | `server.key` | TLS private key (PEM). Auto-generated if missing and `auto_cert = true` |
-| `auto_cert` | bool | `true` | Generate a self-signed certificate when `cert_file` does not exist |
-
-**Complete annotated example:**
-
-```ini
-[server]
-
-# Enable the HTTPS server (disabled by default)
-enabled   = true
-
-# Bind address — 0.0.0.0 listens on all network interfaces
-host      = 0.0.0.0
-
-# Port — 4443 requires no special privileges
-port      = 4443
-
-# TLS certificate and private key (PEM format)
-# Auto-generated on first run when auto_cert = true
-cert_file = server.crt
-key_file  = server.key
-
-# Automatically generate a self-signed certificate if cert_file is missing.
-# Set to false when using a real certificate (e.g. from Let's Encrypt).
-auto_cert = true
-```
-
----
+| `auto_cert` | bool | `true` | Generate a self-signed certificate when `cert_file` does not exist. Set `false` when using a real certificate |
 
 ### 15.3 API reference
 
@@ -918,26 +785,14 @@ All endpoints require HTTPS. All responses include `Connection: close` and
 `Content-Length`. Only `GET` requests are accepted; all other methods return
 `404 Not Found`.
 
----
-
 #### `GET /` or `GET /dashboard.html`
 
-Returns the live HTML dashboard.
-
-**Response**
-
-| Header | Value |
-|---|---|
-| Status | `200 OK` |
-| `Content-Type` | `text/html; charset=utf-8` |
-
-**Body:** The contents of the `output` file configured in `[general]` —
-the same file the dashboard writer updates after every poll cycle. The
-dashboard is a self-contained HTML file with embedded CSS, JavaScript,
-and chart data.
-
-**If the dashboard has not been generated yet** (workers have not completed
-their first poll), a plain HTML placeholder is returned:
+Returns the live HTML dashboard: `200 OK` with `Content-Type: text/html; charset=utf-8`.
+The body is the contents of the `output` file configured in `[general]` (the
+self-contained HTML file, with embedded CSS, JavaScript, and chart data, that
+the dashboard writer updates after every poll cycle). If the dashboard has not
+been generated yet (workers have not completed their first poll), a plain
+HTML placeholder is returned:
 
 ```html
 <html><body>Dashboard not yet generated. Check monitor logs.</body></html>
@@ -946,26 +801,16 @@ their first poll), a plain HTML placeholder is returned:
 **Example:**
 
 ```bash
-curl -k https://localhost:4443/
 curl -k https://localhost:4443/dashboard.html
 ```
 
----
-
 #### `GET /state.json`
 
-Returns the raw shared state as JSON. This is the primary machine-readable
-API endpoint — it contains all readings from all monitored devices.
-
-**Response**
-
-| Header | Value |
-|---|---|
-| Status | `200 OK` |
-| `Content-Type` | `application/json` |
-
-**Body:** The shared state file verbatim. If the state file does not exist
-yet, an empty JSON object `{}` is returned rather than an error.
+Returns the raw shared state as JSON: `200 OK` with `Content-Type: application/json`.
+This is the primary machine-readable API endpoint; the body is the shared
+state file verbatim, containing all readings from all monitored devices. If
+the state file does not exist yet, an empty JSON object `{}` is returned
+rather than an error.
 
 **Top-level structure:**
 
@@ -989,7 +834,7 @@ yet, an empty JSON object `{}` is returned rather than an error.
 | `victron.updated` | ISO 8601 string or `null` | Timestamp of the last successful Victron poll |
 | `victron.readings` | array | One object per configured Victron device |
 
-**DeviceReading object — common fields (all device types):**
+**DeviceReading common fields (all device types):**
 
 | Field | Type | Description |
 |---|---|---|
@@ -1002,7 +847,7 @@ yet, an empty JSON object `{}` is returned rather than an error.
 | `power_w` | float or `null` | DC power (W). For VE.Bus inverters = AC apparent power |
 | `error` | string or `null` | Human-readable error message. `null` on success |
 
-**DeviceReading object — BMS fields** (`device_type = "bms"`):
+**BMS fields** (`device_type = "bms"`):
 
 | Field | Type | Description |
 |---|---|---|
@@ -1042,69 +887,43 @@ yet, an empty JSON object `{}` is returned rather than an error.
 | `"IC error"` | 11 | BMS internal IC failure |
 | `"MOS lock"` | 12 | MOSFET locked by protection |
 
-**DeviceReading object — MPPT solar charger fields** (`device_type = "mppt"`):
+**MPPT solar charger fields** (`device_type = "mppt"`):
 
 | Field | Type | Description |
 |---|---|---|
 | `pv_power_w` | float or `null` | PV panel input power (W) |
 | `yield_today_wh` | float or `null` | Energy harvested since midnight (Wh) |
 | `load_current_a` | float or `null` | Load output current (A). `null` on models without load terminal |
-| `charger_state` | string or `null` | Charger state. See states table below |
+| `charger_state` | string or `null` | Charger state. See list below |
 
-**MPPT charger states:**
+**MPPT charger states:** `"Off"`, `"Low Power"`, `"Fault"`, `"Bulk"`,
+`"Absorption"` (constant voltage), `"Float"` (maintenance charge), `"Storage"`,
+`"Equalize (manual)"`, `"Inverting"` (combined units), `"Power Supply"`,
+`"Starting Up"`, `"Repeated Absorption"`, `"Auto Equalize"`, `"Battery Safe"`,
+`"External Control"`.
 
-| Value | Meaning |
-|---|---|
-| `"Off"` | Not charging |
-| `"Low Power"` | Reduced power output |
-| `"Fault"` | Fault condition |
-| `"Bulk"` | Bulk charging phase |
-| `"Absorption"` | Absorption phase (constant voltage) |
-| `"Float"` | Float maintenance charge |
-| `"Storage"` | Storage mode |
-| `"Equalize (manual)"` | Manual equalisation |
-| `"Inverting"` | Inverter mode (combined units) |
-| `"Power Supply"` | Power supply mode |
-| `"Starting Up"` | Startup sequence |
-| `"Repeated Absorption"` | Repeated absorption |
-| `"Auto Equalize"` | Automatic equalisation |
-| `"Battery Safe"` | Battery-safe mode |
-| `"External Control"` | Externally controlled |
-
-**DeviceReading object — Inverter / VE.Bus fields** (`device_type = "inverter"`):
+**Inverter / VE.Bus fields** (`device_type = "inverter"`):
 
 | Field | Type | Description |
 |---|---|---|
 | `ac_out_power_va` | float or `null` | AC output power. Real watts for VE.Bus; apparent VA for others |
 | `ac_out_voltage_v` | float or `null` | AC output voltage (V) |
 | `ac_out_current_a` | float or `null` | AC output current (A) |
-| `inverter_state` | string or `null` | Device state. See states table below |
+| `inverter_state` | string or `null` | Device state. See list below |
 | `ac_in_power_w` | float or `null` | AC input real power (W). Positive = from grid, negative = feed-in |
 | `ac_in_source` | string or `null` | AC input source: `"AC1"`, `"AC2"`, `"Not connected"` |
 | `vebus_error` | integer or `null` | VE.Bus error code. `0` = no error |
 | `temperature_c` | float or `null` | Battery temperature measured by dongle (°C) |
 | `alarm_reason` | string or `null` | Alarm level: `"Warning"`, `"Alarm"`, or `null` for none |
 
-**Inverter / VE.Bus states:**
+**Inverter / VE.Bus states:** `"Off"`, `"Low Power"` (standby), `"Fault"`,
+`"Bulk"`, `"Absorption"`, `"Float"`, `"Storage"`, `"Equalize"`,
+`"Passthrough"` (passing AC through from grid), `"Inverting"` (generating AC
+from battery), `"Power Assist"` (assisting grid with battery power),
+`"Power Supply"`, `"Charge"` (charging from AC input), `"External Control"`
+(VE.Bus external control active).
 
-| Value | Meaning |
-|---|---|
-| `"Off"` | Inverter off |
-| `"Low Power"` | Standby / low-power mode |
-| `"Fault"` | Fault condition |
-| `"Bulk"` | Bulk charging |
-| `"Absorption"` | Absorption charging |
-| `"Float"` | Float charging |
-| `"Storage"` | Storage mode |
-| `"Equalize"` | Equalisation |
-| `"Passthrough"` | Passing AC through from grid |
-| `"Inverting"` | Inverting (generating AC from battery) |
-| `"Power Assist"` | Assisting grid with battery power |
-| `"Power Supply"` | Power supply mode |
-| `"Charge"` | Charging from AC input |
-| `"External Control"` | VE.Bus external control active |
-
-**DeviceReading object — Battery Monitor fields** (`device_type = "monitor"`):
+**Battery Monitor fields** (`device_type = "monitor"`):
 
 | Field | Type | Description |
 |---|---|---|
@@ -1112,82 +931,40 @@ yet, an empty JSON object `{}` is returned rather than an error.
 | `ttg_minutes` | integer or `null` | Time to go in minutes |
 | `alarm_reason` | integer or `null` | Alarm bitmask (SmartShunt raw alarm register) |
 
-**Full annotated JSON example** — BMS reading with all fields populated:
+**Example BMS reading** (Victron readings carry the common fields plus their
+type's fields from the tables above in the same way):
 
 ```json
 {
-  "bms": {
-    "updated": "2024-01-15T08:15:42",
-    "readings": [
-      {
-        "address":        "A1:B2:C3:D4:E5:F6",
-        "name":           "House Bank",
-        "device_type":    "bms",
-        "timestamp":      "2024-01-15T08:15:40",
-        "voltage_v":      54.32,
-        "current_a":      -15.0,
-        "power_w":        -814.8,
-        "capacity_pct":   84,
-        "remain_ah":      84.0,
-        "nominal_ah":     100.0,
-        "remain_wh":      4562.9,
-        "nominal_wh":     5432.0,
-        "time_to_empty_h": 5.6,
-        "time_to_full_h": null,
-        "cycle_count":    8,
-        "cell_count":     16,
-        "sw_version":     "6.2",
-        "production_date":"2025-11-26",
-        "temp_c":         [23.1, 21.8, 21.9],
-        "balance_cells":  [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        "protection_bits": 0,
-        "faults":         [],
-        "charge_fet":     true,
-        "discharge_fet":  true,
-        "error":          null
-      }
-    ]
-  },
-  "victron": {
-    "updated": "2024-01-15T08:15:11",
-    "readings": [
-      {
-        "address":         "C0:FF:EE:12:34:56",
-        "name":            "Multiplus",
-        "device_type":     "inverter",
-        "timestamp":       "2024-01-15T08:15:09",
-        "voltage_v":       54.0,
-        "current_a":       -15.0,
-        "power_w":         -810.0,
-        "ac_out_power_va": 755.0,
-        "ac_in_power_w":   0.0,
-        "ac_in_source":    "Not connected",
-        "inverter_state":  "Inverting",
-        "temperature_c":   26.0,
-        "alarm_reason":    null,
-        "vebus_error":     0,
-        "error":           null
-      },
-      {
-        "address":        "11:22:33:44:55:66",
-        "name":           "South Array",
-        "device_type":    "mppt",
-        "timestamp":      "2024-01-15T08:15:09",
-        "voltage_v":      54.0,
-        "current_a":      12.0,
-        "power_w":        648.0,
-        "pv_power_w":     680.0,
-        "yield_today_wh": 3200.0,
-        "charger_state":  "Float",
-        "load_current_a": null,
-        "error":          null
-      }
-    ]
-  }
+  "address":        "A1:B2:C3:D4:E5:F6",
+  "name":           "House Bank",
+  "device_type":    "bms",
+  "timestamp":      "2024-01-15T08:15:40",
+  "voltage_v":      54.32,
+  "current_a":      -15.0,
+  "power_w":        -814.8,
+  "capacity_pct":   84,
+  "remain_ah":      84.0,
+  "nominal_ah":     100.0,
+  "remain_wh":      4562.9,
+  "nominal_wh":     5432.0,
+  "time_to_empty_h": 5.6,
+  "time_to_full_h": null,
+  "cycle_count":    8,
+  "cell_count":     16,
+  "sw_version":     "6.2",
+  "production_date":"2025-11-26",
+  "temp_c":         [23.1, 21.8, 21.9],
+  "balance_cells":  [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "protection_bits": 0,
+  "faults":         [],
+  "charge_fet":     true,
+  "discharge_fet":  true,
+  "error":          null
 }
 ```
 
-**Example — offline device** (`error` field populated, electrical fields `null`):
+**Example: offline device** (`error` field populated, electrical fields `null`):
 
 ```json
 {
@@ -1198,7 +975,7 @@ yet, an empty JSON object `{}` is returned rather than an error.
   "voltage_v":   null,
   "current_a":   null,
   "power_w":     null,
-  "error":       "TIMEOUT (35s) — device connected but did not respond"
+  "error":       "Timed out after 35s - device connected but did not respond"
 }
 ```
 
@@ -1217,45 +994,24 @@ curl -sk https://localhost:4443/state.json | \
 curl -sk https://localhost:4443/state.json | \
   python3 -c "import json,sys; s=json.load(sys.stdin); \
   print('BMS:', s['bms']['updated']); print('Victron:', s['victron']['updated'])"
-
-# Using Python requests library (with cert verification disabled for self-signed)
-import requests
-state = requests.get("https://192.168.1.10:4443/state.json", verify=False).json()
-house_bank = next(r for r in state["bms"]["readings"] if r["name"] == "House Bank")
-print(f"SoC: {house_bank['capacity_pct']}%  Remaining: {house_bank['remain_wh']:.0f} Wh")
 ```
 
----
+For a Python client example see Section 15.10.
 
 #### `GET /health`
 
 Lightweight health check endpoint for monitoring systems and load balancers.
-
-**Response**
-
-| Header | Value |
-|---|---|
-| Status | `200 OK` |
-| `Content-Type` | `text/plain` |
-
-**Body:** `OK`
-
-**Example:**
+Returns `200 OK` with `Content-Type: text/plain` and body `OK`.
 
 ```bash
 curl -sk https://localhost:4443/health
 # OK
 ```
 
----
-
 #### All other paths
 
-**Response:** `404 Not Found` with body `Not Found`
-
-Non-`GET` methods (POST, PUT, DELETE, etc.) also return `404 Not Found`.
-
----
+`404 Not Found` with body `Not Found`. Non-`GET` methods (POST, PUT, DELETE,
+etc.) also return `404 Not Found`.
 
 ### 15.4 Response headers
 
@@ -1269,9 +1025,7 @@ All responses from the server include these headers:
 
 The server does not set `Cache-Control`, `ETag`, `Last-Modified`, or CORS
 headers. If you need caching control or cross-origin access, put nginx
-in front (Section 15.10).
-
----
+in front (Section 15.7).
 
 ### 15.5 TLS and certificate details
 
@@ -1311,8 +1065,6 @@ Manage certificates → Authorities → Import → select `server.crt`.
 *Firefox:* Settings → Privacy & Security → View Certificates →
 Authorities → Import → select `server.crt`.
 
----
-
 ### 15.6 Using a real certificate (Let's Encrypt)
 
 ```ini
@@ -1329,8 +1081,6 @@ For port 443 without root:
 ```bash
 sudo setcap 'cap_net_bind_service=+ep' $(which python3)
 ```
-
----
 
 ### 15.7 nginx reverse proxy
 
@@ -1361,8 +1111,6 @@ server {
 }
 ```
 
----
-
 ### 15.8 Security notes
 
 - **Only `GET` is accepted.** `POST`, `PUT`, `DELETE`, and all other methods
@@ -1375,46 +1123,33 @@ server {
 - **TLS 1.2 minimum.** TLS 1.0 and 1.1 are disabled.
 - **Read timeout: 10 seconds** per request line to prevent slow-client attacks.
 - **No response body for 404.** The 404 response body is the literal string
-  `Not Found` — no path or file information is disclosed.
-
----
+  `Not Found`; no path or file information is disclosed.
 
 ### 15.9 Troubleshooting
 
-**`NET::ERR_CERT_AUTHORITY_INVALID` in browser**
+**`NET::ERR_CERT_AUTHORITY_INVALID` in browser**: expected with a self-signed
+cert. Trust it (Section 15.5) or use Let's Encrypt (Section 15.6).
 
-Expected with a self-signed cert. Trust it (Section 15.5) or use Let's
-Encrypt (Section 15.6).
-
-**`FileNotFoundError: HTTPS server: certificate file(s) not found`**
-
+**`FileNotFoundError: HTTPS server: certificate file(s) not found`**:
 `auto_cert = false` but the cert/key files do not exist. Either set
 `auto_cert = true` or supply the files.
 
-**`OSError: [Errno 98] Address already in use`**
-
-Port already occupied:
+**`OSError: [Errno 98] Address already in use`**: port already occupied:
 
 ```bash
 sudo lsof -i :4443
 sudo fuser -k 4443/tcp   # force-release the port
 ```
 
-**`PermissionError: [Errno 13] Permission denied`**
+**`PermissionError: [Errno 13] Permission denied`**: port < 1024 requires
+root or `CAP_NET_BIND_SERVICE`. Use port ≥ 1024.
 
-Port < 1024 requires root or `CAP_NET_BIND_SERVICE`. Use port ≥ 1024.
+**`curl: (60) SSL certificate problem: self-signed certificate`**: use
+`curl -k` (or `--insecure`) to skip verification, or add the cert to your
+system trust store.
 
-**`curl: (60) SSL certificate problem: self-signed certificate`**
-
-Use `curl -k` (or `--insecure`) to skip verification, or add the cert to
-your system trust store.
-
-**State file returns `{}`**
-
-Workers have not written their first poll yet. Wait one `bms_interval`
-(default 120 s) and retry.
-
----
+**State file returns `{}`**: workers have not written their first poll yet.
+Wait one `bms_interval` (default 120 s) and retry.
 
 ### 15.10 Home automation integration examples
 
@@ -1486,7 +1221,7 @@ while True:
 
         for pack in state["bms"]["readings"]:
             if pack.get("error"):
-                print(f"{pack['name']}: OFFLINE — {pack['error']}")
+                print(f"{pack['name']}: OFFLINE: {pack['error']}")
             else:
                 print(f"{pack['name']}: "
                       f"{pack['capacity_pct']}% SoC  "
@@ -1511,34 +1246,20 @@ while True:
 
 ## 16. MCP Server
 
-Solar Monitor includes a Model Context Protocol (MCP) server that exposes
-live solar data directly to AI assistants — Claude Desktop, Cursor, and any
-other MCP-compatible client. Ask natural-language questions about your system
-without leaving the AI interface.
-
-**Example conversations:**
-
-> *"What's my total PV power right now?"*
-> *"Are there any battery faults I should know about?"*
-> *"How long until House Bank runs out at the current draw?"*
-> *"Which charger has produced the most yield today?"*
-
----
+`mcp_server.py` is a Model Context Protocol (MCP) server that exposes live
+solar data to MCP clients such as Claude Desktop or Cursor, so an assistant
+can answer questions like "What's my total PV power right now?" from the
+current state.
 
 ### 16.1 How it works
 
-The MCP server uses the **stdio transport** — it runs as a subprocess launched
+The MCP server uses the **stdio transport**: it runs as a subprocess launched
 directly by the AI client, communicating over stdin/stdout using
 [JSON-RPC 2.0](https://www.jsonrpc.org/specification). No port, no TLS, no
 network socket. The server reads the shared state file (`solar_state.json`)
 on every tool call, so responses always reflect the latest poll data.
 
-**No additional Python packages required.** The server uses only the
-standard library plus the existing `solar_monitor` package.
-
----
-
-### 16.2 Installation — Claude Desktop
+### 16.2 Installation: Claude Desktop
 
 1. Locate or create Claude Desktop's config file:
 
@@ -1556,8 +1277,8 @@ standard library plus the existing `solar_monitor` package.
     "solar-monitor": {
       "command": "python3",
       "args": [
-        "/home/pi/solar_monitor/mcp_server.py",
-        "--config", "/home/pi/solar_monitor/config.ini"
+        "/home/pi/solar_dashboard/mcp_server.py",
+        "--config", "/home/pi/solar_dashboard/config.ini"
       ]
     }
   }
@@ -1570,14 +1291,12 @@ standard library plus the existing `solar_monitor` package.
 **Verifying the connection:**
 
 ```bash
-# Test the server manually — type a request and press Enter
+# Test the server manually: type a request and press Enter
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | \
   python3 mcp_server.py --config config.ini
 ```
 
 You should see a JSON response containing `"name": "solar-monitor"`.
-
----
 
 ### 16.3 Configuration
 
@@ -1586,55 +1305,19 @@ All settings live in the `[mcp]` section of `config.ini`.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `true` | Enable the MCP server. Set `false` to prevent startup. |
-| `api_key` | string | `""` | Shared secret required in every `tools/call`. Empty = no auth. |
-| `allowed_tools` | list | `""` | Comma-separated tool whitelist. Empty = all tools exposed. |
+| `api_key` | string | `""` | Shared secret required in every `tools/call`. Empty = no auth (fine for local-only use). |
+| `allowed_tools` | list | `""` | Comma-separated tool whitelist. Empty = all 8 tools exposed. |
 | `rate_limit` | integer | `60` | Maximum `tools/call` requests per minute. `0` = unlimited. |
 | `require_local` | bool | `true` | Documents intent (stdio is inherently local; no enforcement needed). |
-| `log_requests` | bool | `false` | Log every tool call to stderr for auditing. |
-
-**`read_only` is always `true`** — the server never writes to the state file
-or any other file. This is a guarantee, not a configuration option.
-
-**Example `[mcp]` section:**
-
-```ini
-[mcp]
-
-# Enable the MCP server (Claude Desktop starts it as a subprocess)
-enabled = true
-
-# Require a shared secret in every tool call.
-# In Claude Desktop, include this in a system prompt or set in the MCP client config.
-# Leave empty to disable authentication (fine for local-only use).
-api_key =
-
-# Restrict which tools are visible and callable.
-# Empty means all 8 tools are available.
-# Useful if you want to limit an assistant to read-only aggregate views only.
-allowed_tools =
-
-# Maximum tool calls per minute. Prevents runaway loops in automated agents.
-rate_limit = 60
-
-# Informational — stdio is always local; no network enforcement possible.
-require_local = true
-
-# Set to true to log every tool call name and arguments to stderr.
-# Captured by Claude Desktop in its diagnostic logs.
-log_requests = false
-```
-
----
+| `log_requests` | bool | `false` | Log every tool call name and arguments to stderr (captured by Claude Desktop's diagnostic logs). |
 
 ### 16.4 Available tools
 
 The MCP server exposes eight read-only tools. All return structured JSON.
 
----
-
 #### `get_system_status`
 
-High-level system summary — one number per energy flow. Best starting point
+High-level system summary: one number per energy flow. Best starting point
 for an assistant that needs a quick overview.
 
 **No arguments.**
@@ -1643,39 +1326,14 @@ for an assistant that needs a quick overview.
 
 ```json
 {
-  "solar": {
-    "total_pv_w":     680.0,
-    "yield_today_wh": 3200.0,
-    "mppt_online":    2,
-    "mppt_total":     2
-  },
-  "inverter": {
-    "total_ac_out_w":   755.0,
-    "inverters_online": 1,
-    "inverters_total":  1
-  },
-  "battery": {
-    "avg_soc_pct":     84,
-    "total_remain_wh": 9125.8,
-    "net_current_a":   -15.0,
-    "packs_online":    2,
-    "packs_total":     2,
-    "charging":        false,
-    "discharging":     true
-  },
-  "alerts": {
-    "active_faults":   [],
-    "offline_devices": [],
-    "alarms":          []
-  },
-  "data_age": {
-    "bms_updated":     "2024-01-15T08:15:42",
-    "victron_updated": "2024-01-15T08:15:11"
-  }
+  "solar":    { "total_pv_w": 680.0, "yield_today_wh": 3200.0, "mppt_online": 2, "mppt_total": 2 },
+  "inverter": { "total_ac_out_w": 755.0, "inverters_online": 1, "inverters_total": 1 },
+  "battery":  { "avg_soc_pct": 84, "total_remain_wh": 9125.8, "net_current_a": -15.0,
+                "packs_online": 2, "packs_total": 2, "charging": false, "discharging": true },
+  "alerts":   { "active_faults": [], "offline_devices": [], "alarms": [] },
+  "data_age": { "bms_updated": "2024-01-15T08:15:42", "victron_updated": "2024-01-15T08:15:11" }
 }
 ```
-
----
 
 #### `get_battery_status`
 
@@ -1695,7 +1353,7 @@ Each pack object:
 | `online` | boolean | `false` if last poll failed |
 | `soc_pct` | integer | State of charge 0–100% |
 | `voltage_v` | string | Pack voltage (e.g. `"54.32"`) |
-| `current_a` | string | Signed current — negative = discharging |
+| `current_a` | string | Signed current (negative = discharging) |
 | `power_w` | string | DC power |
 | `remain_wh` | string | Energy remaining |
 | `remain_ah` | string | Capacity remaining |
@@ -1711,8 +1369,6 @@ Each pack object:
 | `discharge_fet` | boolean | Discharge MOSFET enabled |
 | `firmware` | string | BMS firmware version |
 | `error` | string | Error message when `online: false` |
-
----
 
 #### `get_solar_status`
 
@@ -1733,8 +1389,6 @@ Each charger object:
 | `battery_a` | string | Battery output current |
 | `charger_state` | string | `"Off"`, `"Bulk"`, `"Absorption"`, `"Float"`, etc. |
 | `load_a` | string or null | Load terminal current (if present) |
-
----
 
 #### `get_inverter_status`
 
@@ -1759,17 +1413,12 @@ Each inverter object:
 | `alarm` | string or null | Alarm level, null when none |
 | `vebus_error` | integer or null | VE.Bus error code (null or 0 = ok) |
 
----
-
 #### `get_device`
 
 All available data for a single device, identified by name or MAC address.
 
-**Arguments:**
-
-| Argument | Type | Description |
-|---|---|---|
-| `name_or_address` | string | Device name (e.g. `"House Bank"`) or MAC (`"AA:BB:CC:DD:EE:FF"`). Case-insensitive. |
+**Argument:** `name_or_address` (string): device name (e.g. `"House Bank"`)
+or MAC (`"AA:BB:CC:DD:EE:FF"`). Case-insensitive.
 
 **Returns:**
 
@@ -1782,9 +1431,7 @@ All available data for a single device, identified by name or MAC address.
 ```
 
 `found: false` when no device matches. `devices` may contain multiple
-entries if devices share a name — prefer MAC for precision.
-
----
+entries if devices share a name; prefer MAC for precision.
 
 #### `list_devices`
 
@@ -1798,42 +1445,20 @@ Use this to discover available devices before querying specific ones.
 ```json
 {
   "devices": [
-    {
-      "name":         "House Bank",
-      "address":      "A1:B2:C3:D4:E5:F6",
-      "type":         "bms",
-      "online":       true,
-      "soc_pct":      84,
-      "last_updated": "2024-01-15T08:15:42"
-    },
-    {
-      "name":         "South Array",
-      "type":         "mppt",
-      "online":       true,
-      "pv_power_w":   "680.0"
-    },
-    {
-      "name":         "MultiPlus",
-      "type":         "inverter",
-      "online":       true,
-      "ac_out_w":     "755",
-      "state":        "Inverting"
-    }
+    { "name": "House Bank", "address": "A1:B2:C3:D4:E5:F6", "type": "bms",
+      "online": true, "soc_pct": 84, "last_updated": "2024-01-15T08:15:42" },
+    { "name": "South Array", "type": "mppt", "online": true, "pv_power_w": "680.0" },
+    { "name": "MultiPlus", "type": "inverter", "online": true,
+      "ac_out_w": "755", "state": "Inverting" }
   ],
-  "counts": {
-    "total":   3,
-    "online":  3,
-    "offline": 0
-  }
+  "counts": { "total": 3, "online": 3, "offline": 0 }
 }
 ```
-
----
 
 #### `get_alerts`
 
 Active alerts across the entire system. Returns `all_clear: true` when
-everything is healthy — useful for polling.
+everything is healthy; useful for polling.
 
 **No arguments.**
 
@@ -1842,12 +1467,8 @@ everything is healthy — useful for polling.
 ```json
 {
   "all_clear": false,
-  "offline": [
-    { "name": "West Array", "type": "mppt", "error": "Device not seen during scan" }
-  ],
-  "battery_faults": [
-    { "name": "House Bank", "fault": "Cell overvoltage" }
-  ],
+  "offline":         [ { "name": "West Array", "type": "mppt", "error": "Device not seen during scan" } ],
+  "battery_faults":  [ { "name": "House Bank", "fault": "Cell overvoltage" } ],
   "inverter_alarms": [],
   "summary": "1 device(s) offline; 1 active fault(s)"
 }
@@ -1859,13 +1480,8 @@ When healthy:
   "summary": "All systems nominal." }
 ```
 
-**Fault names** that can appear in `battery_faults`:
-
-`Cell overvoltage`, `Cell undervoltage`, `Pack overvoltage`, `Pack undervoltage`,
-`Charge overtemp`, `Charge undertemp`, `Discharge overtemp`, `Discharge undertemp`,
-`Charge overcurrent`, `Discharge overcurrent`, `Short circuit`, `IC error`, `MOS lock`
-
----
+Fault names in `battery_faults` are the same strings as the BMS fault table
+in Section 15.3.
 
 #### `get_data_age`
 
@@ -1878,33 +1494,19 @@ readings to confirm they are fresh.
 
 ```json
 {
-  "bms": {
-    "last_updated": "2024-01-15T08:15:42",
-    "age":          "45s ago",
-    "readings":     2
-  },
-  "victron": {
-    "last_updated": "2024-01-15T08:15:11",
-    "age":          "2m ago",
-    "readings":     2
-  },
-  "stale": {
-    "bms":     false,
-    "victron": false
-  }
+  "bms":     { "last_updated": "2024-01-15T08:15:42", "age": "45s ago", "readings": 2 },
+  "victron": { "last_updated": "2024-01-15T08:15:11", "age": "2m ago",  "readings": 2 },
+  "stale":   { "bms": false, "victron": false }
 }
 ```
 
 `stale: true` when `last_updated` is `null` (no poll has completed).
 `age` format: `"45s ago"`, `"3m ago"`, `"1.5h ago"`.
 
----
-
 ### 16.5 Security model
 
-**Authentication — `api_key`**
-
-When `api_key` is set, every `tools/call` must include it as an argument:
+**Authentication (`api_key`).** When `api_key` is set, every `tools/call`
+must include it as an argument:
 
 ```json
 {
@@ -1914,39 +1516,29 @@ When `api_key` is set, every `tools/call` must include it as an argument:
 ```
 
 Wrong or missing key returns JSON-RPC error `-32001` (Unauthorized).
-The key is stripped from arguments before reaching any tool function —
-tools never see it.
-
-With Claude Desktop, inject the key via a system prompt:
+The key is stripped from arguments before reaching any tool function;
+tools never see it. With Claude Desktop, inject the key via a system prompt:
 *"When using solar-monitor tools, always include `api_key: your-secret` in arguments."*
 
-**Tool whitelisting — `allowed_tools`**
-
-When set, only listed tools appear in `tools/list` and can be called via
-`tools/call`. Attempting to call an unlisted tool returns error `-32002` (Forbidden).
-This lets you restrict a general-purpose assistant to only summary views:
+**Tool whitelisting (`allowed_tools`).** When set, only listed tools appear in
+`tools/list` and can be called via `tools/call`. Attempting to call an unlisted
+tool returns error `-32002` (Forbidden). This lets you restrict a
+general-purpose assistant to only summary views:
 
 ```ini
 allowed_tools = get_system_status, get_alerts, list_devices
 ```
 
-**Rate limiting — `rate_limit`**
+**Rate limiting (`rate_limit`).** Sliding 60-second window. When exceeded,
+returns error `-32000` with a message advising the caller to retry. Protects
+against runaway loops in automated agents. Set `rate_limit = 0` to disable.
 
-Sliding 60-second window. When exceeded, returns error `-32000` with a
-message advising the caller to retry. Protects against runaway loops in
-automated agents. Set `rate_limit = 0` to disable.
+**Read-only.** The MCP server never writes to the state file, dashboard,
+certificates, or any other file on disk. This is hardcoded, not configurable.
 
-**Read-only guarantee**
-
-The MCP server never writes to the state file, dashboard, certificates, or
-any other file on disk. This is hardcoded and not configurable.
-
-**Transport security**
-
-The stdio transport is inherently local — only a process on the same machine
-running as the same user can access it. There is no network socket to firewall.
-
----
+**Transport security.** The stdio transport is inherently local: only a
+process on the same machine running as the same user can access it. There is
+no network socket to firewall.
 
 ### 16.6 Error codes
 
@@ -1963,8 +1555,6 @@ All errors follow JSON-RPC 2.0. Custom codes in the `-32000` to `-32099` range:
 | `-32001` | Unauthorized | Missing or wrong `api_key` |
 | `-32002` | Forbidden | Tool not in `allowed_tools` whitelist |
 
----
-
 ### 16.7 Troubleshooting
 
 **Server doesn't appear in Claude Desktop**
@@ -1977,37 +1567,23 @@ All errors follow JSON-RPC 2.0. Custom codes in the `-32000` to `-32099` range:
   ```
   Then type `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` and press Enter.
 
-**`MCP server is disabled`**
+**`MCP server is disabled`**: set `enabled = true` in the `[mcp]` section of
+`config.ini`.
 
-Set `enabled = true` in `[mcp]` section of `config.ini`.
+**Tools return stale data**: check `get_data_age`. If `stale: true`, the
+supervisor workers haven't completed a poll. Check that `solar_monitor.py` is
+running and the state file's mtime is advancing (`ls -la solar_state.json`).
 
-**Tools return stale data**
+**`Unauthorized` error on every call**: `api_key` is set in config but not
+being passed in arguments. Either clear `api_key` for local use, or ensure
+your MCP client includes it in every request.
 
-Check `get_data_age` — if `stale: true`, the supervisor workers haven't completed
-a poll. Check that `solar_monitor.py` is running and the state file is being updated:
-```bash
-ls -la solar_state.json    # watch mtime
-```
+**`Rate Limited` on every call**: reduce polling frequency or increase
+`rate_limit`.
 
-**`Unauthorized` error on every call**
-
-`api_key` is set in config but not being passed in arguments. Either clear `api_key`
-for local use, or ensure your MCP client includes it in every request.
-
-**`Rate Limited` on every call**
-
-Reduce polling frequency or increase `rate_limit`. For interactive use,
-`rate_limit = 0` (unlimited) is safe since a human cannot saturate 60/min manually.
-
-**Config file not found warning at startup**
-
-The server falls back to defaults (no auth, all tools, 60/min) and continues.
-Specify the correct path with `--config`:
-```bash
-python3 mcp_server.py --config /absolute/path/to/config.ini
-```
-
----
+**Config file not found warning at startup**: the server falls back to
+defaults (no auth, all tools, 60/min) and continues. Specify the correct
+path with `--config /absolute/path/to/config.ini`.
 
 ### 16.8 Command-line reference
 
@@ -2028,30 +1604,20 @@ All log output goes to **stderr**. Stdout is reserved for JSON-RPC messages.
 
 ## 17. Historical Data & SQLite Storage
 
-Solar Monitor can persist every reading to a local SQLite database, providing
+Solar Monitor can persist every reading to a local SQLite database, giving
 long-term history independent of the in-memory rolling window used for
-dashboard charts. The database stores all device readings with full field
-fidelity, indexed for fast date-range queries, and automatically enforces a
-configurable retention policy.
-
-By default history storage is **disabled** — enable it by adding a `[history]`
+dashboard charts. All device readings are stored with full field fidelity,
+indexed for fast date-range queries, under a configurable retention policy.
+History storage is disabled by default: enable it by adding a `[history]`
 section to `config.ini`.
-
----
 
 ### 17.1 How it works
 
 Each worker (`bms_monitor.py`, `victron_monitor.py`) writes readings to
 the SQLite database immediately after every successful poll cycle, in addition
-to updating the shared state file. On startup, workers load the most recent
-readings from the database to pre-populate the in-memory history used by
-dashboard charts — so charts show real history across restarts.
-
-Unsuccessful readings (where `error` is set) are never stored. The database
-is shared between workers; SQLite WAL mode ensures concurrent writes never
-block each other or the dashboard reader.
-
----
+to updating the shared state file. Unsuccessful readings (where `error` is set)
+are never stored. The database is shared between workers; SQLite WAL mode
+ensures concurrent writes never block each other or the dashboard reader.
 
 ### 17.2 Configuration
 
@@ -2061,38 +1627,24 @@ block each other or the dashboard reader.
 # Enable SQLite history storage (disabled by default)
 enabled = true
 
-# Database file path. Relative paths are resolved from the working directory.
-# The parent directories are created automatically if they don't exist.
+# Database file path. Relative paths are resolved from the working directory;
+# parent directories are created automatically if they don't exist.
 db_path = solar_history.db
 
-# How many days of history to retain. Older rows are deleted automatically
-# during each write cycle (at most once per hour).
-# 0 = keep forever (no automatic deletion).
+# Days of history to retain. Older rows are deleted automatically during
+# write cycles (at most once per hour). 0 = keep forever.
 # Default: 1095 (3 years).
 retention_days = 1095
 
-# How often to run VACUUM to compact the database file and reclaim disk space.
-# VACUUM runs automatically when the configured number of days has passed
-# since the last VACUUM.
+# Days between automatic VACUUM runs, which compact the database file
+# and reclaim disk space.
 vacuum_interval_days = 7
 ```
-
-**Retention guidance:**
-
-| Interval | Days |
-|---|---|
-| 1 year | 365 |
-| 2 years | 730 |
-| 3 years (default) | 1095 |
-| 5 years | 1825 |
-| Keep forever | 0 |
 
 **Disk space estimate:** at 30-second Victron poll and 120-second BMS poll
 with 4 devices, expect roughly 3–5 MB per month, or 40–60 MB per year.
 The database compresses well; a 3-year store with 4 devices typically fits
 under 200 MB.
-
----
 
 ### 17.3 Database schema
 
@@ -2126,144 +1678,19 @@ List fields (`temp_c`, `faults`, `balance_cells`) are stored as JSON strings.
 Indexes exist on `recorded_at`, `device_name`, `device_type`, and the
 composite `(device_name, recorded_at)`.
 
----
-
 ### 17.4 Management utilities
 
-Two command-line utilities live in the `utils/` directory. Both accept a
-`--config` argument and can be run from the repository root without
-installation.
-
----
-
-#### `utils/purge_history.py` — delete historical data
-
-```
-python utils/purge_history.py [OPTIONS]
-
-Filters (AND logic — combine freely):
-  --before DATE         Delete rows with recorded_at < DATE
-  --after  DATE         Delete rows with recorded_at > DATE
-  --device NAME         Restrict to this device name (exact match)
-  --type   TYPE         Restrict to device type: bms, mppt, inverter, ...
-
-Actions:
-  --enforce-retention   Delete all rows older than retention_days
-  --vacuum              Run VACUUM after deletion to reclaim space
-  --stats               Show database statistics and exit
-  --list-devices        List all devices with row counts and exit
-
-Safety:
-  --dry-run             Count matching rows without deleting
-  --yes / -y            Skip the confirmation prompt
-```
-
-**Examples:**
-
-```bash
-# See database statistics first
-python utils/purge_history.py --config config.ini --stats
-
-# Dry run — see what would be deleted before a given date
-python utils/purge_history.py --config config.ini \
-    --before 2023-01-01 --dry-run
-
-# Delete everything before 1 January 2023
-python utils/purge_history.py --config config.ini \
-    --before 2023-01-01
-
-# Delete a specific bad-data window (e.g. sensor was misconfigured)
-python utils/purge_history.py --config config.ini \
-    --after 2024-03-01 --before 2024-03-05
-
-# Remove all data for a decommissioned device
-python utils/purge_history.py --config config.ini \
-    --device "Old Pack"
-
-# Delete old BMS data but keep Victron data
-python utils/purge_history.py --config config.ini \
-    --type bms --before 2023-06-01
-
-# Apply the configured retention policy right now, then compact
-python utils/purge_history.py --config config.ini \
-    --enforce-retention --vacuum
-
-# Non-interactive (scripted/cron use)
-python utils/purge_history.py --config config.ini \
-    --before 2023-01-01 --yes
-```
-
----
-
-#### `utils/query_history.py` — query and export data
-
-```
-python utils/query_history.py [OPTIONS]
-
-Filters:
-  --device NAME         Filter by device name (exact match)
-  --type   TYPE         Filter by device type
-  --start  DATE         Earliest recorded_at (e.g. 2024-01-01, or 'today', 'yesterday')
-  --end    DATE         Latest  recorded_at (inclusive)
-  --limit  N            Maximum number of rows
-
-Output:
-  --format table|csv|json   Output format (default: table)
-  --fields col1,col2,...    Comma-separated column list
-
-Info:
-  --stats               Show database statistics
-  --list-devices        List all devices with row counts
-  --list-fields         List all available column names
-```
-
-**Examples:**
-
-```bash
-# Show recent readings for all devices (terminal table)
-python utils/query_history.py --config config.ini
-
-# Export a device's full history as CSV
-python utils/query_history.py --config config.ini \
-    --device "House Bank" --format csv > house_bank.csv
-
-# Export a date range as JSON
-python utils/query_history.py --config config.ini \
-    --start 2024-01-01 --end 2024-01-31 --format json
-
-# Export only key fields — useful for smaller CSV files
-python utils/query_history.py --config config.ini \
-    --device "House Bank" \
-    --fields recorded_at,voltage_v,current_a,capacity_pct,remain_wh \
-    --format csv > house_bank_soc.csv
-
-# Today's MPPT yield
-python utils/query_history.py --config config.ini \
-    --type mppt --start today \
-    --fields recorded_at,device_name,pv_power_w,yield_today_wh
-
-# Most recent 20 readings
-python utils/query_history.py --config config.ini \
-    --limit 20 --order desc
-
-# All available column names
-python utils/query_history.py --config config.ini --list-fields
-```
-
----
+Two command-line utilities live in the `utils/` directory:
+`purge_history.py` (delete history by date range, device, or type) and
+`query_history.py` (query and export history as a table, CSV, or JSON).
+See [Section 18](#18-utils-management-utilities) for the full reference.
 
 ### 17.5 Automatic retention enforcement
 
-Retention is enforced automatically — no cron job required. After each
-write batch, the worker checks whether retention enforcement was run in the
-last hour. If not, it deletes all rows where `recorded_at` is older than
-`retention_days` days ago.
-
-This means:
-
-- Retention runs at most once per hour per worker process.
-- Old data is removed gradually as new data arrives.
-- No separate cleanup process or scheduled task is needed.
+Retention is enforced automatically; no cron job is required. After each
+write batch, at most once per hour per worker process, the worker deletes
+all rows where `recorded_at` is older than `retention_days` days ago, so old
+data is removed gradually as new data arrives.
 
 To apply retention immediately (e.g. after changing `retention_days` to a
 smaller value), run:
@@ -2283,71 +1710,49 @@ Then schedule `purge_history.py` via cron:
 
 ```cron
 # Purge data older than 1 year, every Sunday at 03:00
-0 3 * * 0 cd /home/pi/solar_monitor && python utils/purge_history.py \
+0 3 * * 0 cd /home/pi/solar_dashboard && python utils/purge_history.py \
     --config config.ini --before $(date -d '1 year ago' +\%Y-\%m-\%d) --yes
 ```
-
----
 
 ### 17.6 Dashboard chart integration
 
 When history is enabled, workers load the most recent readings from SQLite
-on startup to pre-populate the in-memory chart history. This means:
-
-- Charts show real data immediately after a restart, not just data since the
-  last restart.
-- The in-memory rolling window (`max_history`, default 600 points) is
-  seeded from SQLite, then extended in memory as new polls arrive.
-- The SQLite database is not queried on every dashboard render — only on
-  worker startup. Live chart updates continue to use the in-memory dict.
-
----
+on startup to pre-populate the in-memory chart history, so charts show real
+data immediately after a restart. The in-memory rolling window (`max_history`,
+default 600 points) is seeded from SQLite, then extended in memory as new
+polls arrive. The database is only queried on worker startup, never on
+dashboard render; live chart updates use the in-memory dict.
 
 ### 17.7 Troubleshooting
 
-**`FileNotFoundError: database not found`** (utils)
+**`FileNotFoundError: database not found`** (utils): the database is created
+automatically when the first reading is written. Make sure the monitor has
+run at least one successful poll cycle with `[history] enabled = true`
+before using the utilities.
 
-The database is created automatically when the first reading is written.
-Make sure the monitor has run at least one successful poll cycle with
-`[history] enabled = true` before using the utilities.
+**Database grows faster than expected**: after large deletions the file size
+does not shrink until VACUUM runs. Run it manually
+(`python utils/purge_history.py --config config.ini --vacuum`) or reduce
+`vacuum_interval_days` (e.g. to `1`).
 
-**Database grows faster than expected**
+**Charts are empty after enabling history**: the in-memory history dict is
+populated on startup from the most recent `max_history` readings. If the
+database is new and no polls have completed, the dict will be empty until the
+first poll. This is expected; restart the monitor after the first poll cycle.
 
-Check `vacuum_interval_days`. After large deletions the file size does not
-shrink until VACUUM runs. Run it manually:
-
-```bash
-python utils/purge_history.py --config config.ini --vacuum
-```
-
-Or reduce the vacuum interval:
-
-```ini
-[history]
-vacuum_interval_days = 1
-```
-
-**Charts are empty after enabling history**
-
-The in-memory history dict is populated on startup from the most recent
-`max_history` readings. If the database is new and no polls have completed,
-the dict will be empty until the first poll. This is expected — restart the
-monitor after the first poll cycle.
-
-**History writes are slow**
-
-SQLite WAL mode (used by default) typically handles hundreds of inserts per
-second. If writes are slow, check that the database is on a local filesystem
-(not NFS or a network share) and that the disk is not full.
+**History writes are slow**: SQLite WAL mode (used by default) typically
+handles hundreds of inserts per second. If writes are slow, check that the
+database is on a local filesystem (not NFS or a network share) and that the
+disk is not full.
 
 ---
 
-## 18. Utils — Management Utilities
+## 18. Utils: Management Utilities
 
 The `utils/` directory contains server-side management scripts for the Solar
-Monitor database and data pipeline. All utilities are standalone Python scripts
-that can be run directly from the repository root without any installation
-step beyond the project's existing dependencies.
+Monitor database and data pipeline: standalone Python scripts run directly
+from the repository root, with no installation step beyond the project's
+existing dependencies.
 
 **Convention:** every utility accepts `--config` to read the project config
 file, and `--db` to override the database path directly. Both run against
@@ -2360,9 +1765,7 @@ utils/
 └── query_history.py        ← query and export readings as CSV or JSON
 ```
 
----
-
-### 18.1 `purge_history.py` — delete historical data
+### 18.1 `purge_history.py`: delete historical data
 
 Deletes readings from the SQLite history database. Always requires at least
 one filter to prevent accidental full-table deletion. Prompts for confirmation
@@ -2383,7 +1786,7 @@ python utils/purge_history.py [OPTIONS]
 | `--config FILE` | Config file to read `[history] db_path` from (default: `config.ini`) |
 | `--db FILE` | Override database path directly, bypassing config |
 
-**Filters** (AND logic — any combination):
+**Filters** (AND logic; any combination):
 
 | Option | Description |
 |---|---|
@@ -2398,7 +1801,7 @@ python utils/purge_history.py [OPTIONS]
 |---|---|
 | `--enforce-retention` | Delete all rows older than `retention_days` from config |
 | `--vacuum` | Run `VACUUM` after deletion to compact the database file |
-| `--dry-run` | Count matching rows without deleting — always safe to run |
+| `--dry-run` | Count matching rows without deleting; always safe to run |
 | `--yes` / `-y` | Skip the confirmation prompt (for scripted / cron use) |
 
 **Inspection:**
@@ -2415,13 +1818,9 @@ python utils/purge_history.py [OPTIONS]
 python utils/purge_history.py --config config.ini --stats
 python utils/purge_history.py --config config.ini --list-devices
 
-# Dry run — see what would be deleted without deleting anything
+# Dry run: see what would be deleted, then delete (drop --dry-run)
 python utils/purge_history.py --config config.ini \
     --before 2023-01-01 --dry-run
-
-# Delete all data older than 1 January 2023
-python utils/purge_history.py --config config.ini \
-    --before 2023-01-01
 
 # Delete a specific bad-data window (e.g. sensor was misconfigured)
 python utils/purge_history.py --config config.ini \
@@ -2435,19 +1834,11 @@ python utils/purge_history.py --config config.ini \
 python utils/purge_history.py --config config.ini \
     --type bms --before 2023-06-01
 
-# Delete one specific device's data from one specific window
-python utils/purge_history.py --config config.ini \
-    --device "House Bank" --after 2024-06-01 --before 2024-06-30
-
-# Apply the configured retention policy immediately
-python utils/purge_history.py --config config.ini \
-    --enforce-retention
-
-# Apply retention then compact the file (reclaims disk space)
+# Apply the configured retention policy immediately, then compact the file
 python utils/purge_history.py --config config.ini \
     --enforce-retention --vacuum
 
-# Non-interactive use in a cron job (no confirmation prompt)
+# Non-interactive (scripted/cron use, no confirmation prompt)
 python utils/purge_history.py --config config.ini \
     --before 2023-01-01 --yes
 
@@ -2460,14 +1851,12 @@ python utils/purge_history.py --db /data/solar_history.db \
 
 ```cron
 # Apply retention policy every Sunday at 03:00, then vacuum
-0 3 * * 0 cd /home/pi/solar_monitor && \
+0 3 * * 0 cd /home/pi/solar_dashboard && \
   python utils/purge_history.py --config config.ini \
   --enforce-retention --vacuum --yes >> /var/log/solar_purge.log 2>&1
 ```
 
----
-
-### 18.2 `query_history.py` — query and export data
+### 18.2 `query_history.py`: query and export data
 
 Reads the SQLite history database and outputs results as a terminal table,
 CSV, or JSON. Designed for data exploration, trend analysis, and integration
@@ -2553,7 +1942,7 @@ python utils/query_history.py --config config.ini --list-devices
 python utils/query_history.py --config config.ini \
     --device "House Bank" --format csv > house_bank.csv
 
-# Export only key fields — smaller file, faster to open in a spreadsheet
+# Export only key fields (smaller file, faster to open in a spreadsheet)
 python utils/query_history.py --config config.ini \
     --device "House Bank" \
     --fields recorded_at,voltage_v,current_a,capacity_pct,remain_wh \
@@ -2567,14 +1956,6 @@ python utils/query_history.py --config config.ini \
 python utils/query_history.py --config config.ini \
     --type mppt --start today \
     --fields recorded_at,device_name,pv_power_w,yield_today_wh
-
-# All inverter readings for a specific month as CSV
-python utils/query_history.py --config config.ini \
-    --type inverter --start 2024-06-01 --end 2024-06-30 --format csv
-
-# Last 100 BMS readings, newest first
-python utils/query_history.py --config config.ini \
-    --type bms --limit 100 --order desc
 
 # Database statistics
 python utils/query_history.py --config config.ini --stats
@@ -2603,16 +1984,13 @@ print(df.groupby('device_name')['capacity_pct'].describe())
 "
 ```
 
----
-
 ### 18.3 Adding new utilities
 
-Any Python script placed in `utils/` and following the same conventions
-(reading from `--config`, using `HistoryDB` or `load_state` from the package)
-integrates naturally with the rest of the project.
-
-The `utils/__init__.py` file makes the directory importable as a Python
-package, so utilities can share helper code:
+Any Python script placed in `utils/` that follows the same conventions
+(reading `--config`, using `HistoryDB` or `load_state` from the package)
+works alongside the existing utilities. The `utils/__init__.py` file makes
+the directory importable as a Python package, so utilities can share
+helper code:
 
 ```python
 # In a new utility

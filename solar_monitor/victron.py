@@ -1,8 +1,8 @@
 """
-solar_monitor/victron.py — Victron Instant Readout BLE advertisement parsing
+solar_monitor/victron.py - Victron Instant Readout BLE advertisement parsing
 =============================================================================
 Decodes Victron Energy device advertisements broadcast over BLE.  No GATT
-connection is required — all data arrives in the manufacturer-specific
+connection is required - all data arrives in the manufacturer-specific
 advertisement payload.
 
 Supported devices
@@ -22,16 +22,16 @@ so index 0 of the value bytes is the first application-level payload byte.
 
 Two payload formats exist in the wild:
 
-**Format A** — Product Advertisement (outer type 0x10):
+**Format A** - Product Advertisement (outer type 0x10):
   [0]    = 0x10  outer record type
   [1-2]  = model ID (uint16 LE)
   [3]    = readout byte: high nibble = key index, low nibble = record type
   [4]    = counter/flags byte
   [5-6]  = nonce (uint16 LE, increments each beacon)
-  [7]    = key-index byte  — NOT key[0]; do not compare against the key
+  [7]    = key-index byte  - NOT key[0]; do not compare against the key
   [8+]   = AES-128-CTR encrypted payload
 
-**Format B** — Extra Manufacturer Data (direct record):
+**Format B** - Extra Manufacturer Data (direct record):
   [0]    = record type
   [1-2]  = nonce (uint16 LE)
   [3]    = key-index byte
@@ -49,7 +49,7 @@ payloads per MAC.  This module tries them in preference order:
 For each candidate payload the module:
   a. Decrypts using AES-128-CTR with the configured advertisement key.
   b. For record types with a state byte at [0] (solar charger, inverter),
-     verifies the state is a known value — random bytes are unlikely to hit
+     verifies the state is a known value - random bytes are unlikely to hit
      one of the ~9 valid state codes.
   c. Checks that any decoded voltage is physically plausible (0–150 V).
   d. Uses the first payload that passes all checks.
@@ -76,7 +76,7 @@ from .models import DeviceReading
 
 log = logging.getLogger(__name__)
 
-# Version tag — bump when parser logic changes significantly.
+# Version tag - bump when parser logic changes significantly.
 _VICTRON_VERSION = "2025-01-vebus-v3"
 
 
@@ -139,7 +139,7 @@ _INVERTER_STATES: dict[int, str] = {
 # operating states (0x08=Passthrough, 0x0A=Power Assist, 0xFD=Charge,
 # 0xF7=External Control, …) that are not in _VALID_STATES, causing the
 # record to be falsely rejected and the 0x07 fallback parser to run on
-# the 0x0C ciphertext — producing completely wrong readings.
+# the 0x0C ciphertext - producing completely wrong readings.
 # _parse_vebus does its own length plausibility check instead.
 _RECORDS_WITH_STATE: set[int] = {0x01, 0x03, 0x06, 0x07, 0x0B}
 
@@ -154,7 +154,7 @@ def extract_victron_mfr(adv_data) -> Optional[bytes]:
     Return the best usable Victron payload from an AdvertisementData object.
 
     Victron devices may broadcast:
-    - A 4-byte VE.Smart networking beacon (Format A, < 9 bytes) — not Instant Readout
+    - A 4-byte VE.Smart networking beacon (Format A, < 9 bytes) - not Instant Readout
     - A full Instant Readout payload (Format A >= 9 bytes, or Format B >= 5 bytes)
 
     Bleak may return a single bytes value or a list of bytes values for the same
@@ -175,7 +175,7 @@ def extract_victron_mfr(adv_data) -> Optional[bytes]:
         if p[0] == 0x10:
             if len(p) >= 9:
                 return p      # Format A Instant Readout
-            # else: short VE.Smart beacon — skip
+            # else: short VE.Smart beacon - skip
         elif len(p) >= 5:
             return p          # Format B Instant Readout
     return None
@@ -196,7 +196,7 @@ def parse_payload(mfr_raw: bytes) -> tuple[int, int, bytes]:
       [7]    first byte of encryption key (for verification)
       [8+]   AES-128-CTR ciphertext
 
-    NOTE — nibble order: byte[3] high nibble carries the record type and low
+    NOTE - nibble order: byte[3] high nibble carries the record type and low
     nibble carries the key index.  This matches the victron-ble open-source
     reference implementation (keshavdv/victron-ble).  An earlier version of
     this code had the nibbles reversed, causing record type 0x0C (VE.Bus,
@@ -266,21 +266,21 @@ def try_decrypt(nonce_val: int, ciphertext: bytes,
 
 def _parse_solar(dec: bytes) -> dict:
     """
-    Parse record type 0x01 — Solar Charger (SmartSolar / BlueSolar MPPT).
+    Parse record type 0x01 - Solar Charger (SmartSolar / BlueSolar MPPT).
 
     Layout per official Victron Extra Manufacturer Data specification.
     All bit offsets are relative to decrypted[0] (spec "Start bit 32").
 
     Bit   Bytes    Bits  Scale      NA value  Field
     ────  ───────  ────  ─────────  ────────  ──────────────────────────────
-      0   [0]        8   —          0xFF      device_state
-      8   [1]        8   —          0xFF      charger_error
+      0   [0]        8   -          0xFF      device_state
+      8   [1]        8   -          0xFF      charger_error
      16   [2-3]     16   0.01 V     0x7FFF    battery_voltage  (int16 signed)
      32   [4-5]     16   0.1 A      0x7FFF    battery_current  (int16 signed)
      48   [6-7]     16   0.01 kWh   0xFFFF    yield_today      (uint16)
      64   [8-9]     16   1 W        0xFFFF    pv_power         (uint16)
      80   [10] b0    9   0.1 A      0x1FF     load_current     (uint9 packed)
-     89           (39)              —         unused
+     89           (39)              -         unused
 
     yield_today: multiply raw value by 10 to get Wh (0.01 kWh × 1000 ÷ 10 = 10 Wh).
 
@@ -325,7 +325,7 @@ def _parse_solar(dec: bytes) -> dict:
 
 def _parse_inverter(dec: bytes) -> dict:
     """
-    Parse record type 0x03 — Inverter (Phoenix, Quattro, MultiPlus classic).
+    Parse record type 0x03 - Inverter (Phoenix, Quattro, MultiPlus classic).
 
     Layout per official Victron Extra Manufacturer Data specification
     (https://wiki.victronenergy.com/rend/ble/extra_manufacturer_data).
@@ -334,8 +334,8 @@ def _parse_inverter(dec: bytes) -> dict:
 
     Field            Spec bit  Bytes    Bits  Scale    NA value
     ──────────────── ────────  ───────  ────  ───────  ────────
-    device_state       32       [0]       8   —        0xFF
-    alarm_reason       40       [1-2]    16   —        —
+    device_state       32       [0]       8   -        0xFF
+    alarm_reason       40       [1-2]    16   -        -
     battery_voltage    56       [3-4]    16   0.01V    0x7FFF  (int16 signed)
     ac_apparent_power  72       [5-6]    16   1 VA     0xFFFF  (uint16)
     ac_voltage         88       [7] b0   15   0.01V    0x7FFF  (bit-packed)
@@ -383,7 +383,7 @@ def _parse_inverter(dec: bytes) -> dict:
 
     return {
         "voltage_v":        batt_v,
-        "power_w":          ac_va,         # AC apparent power — the dedicated spec field
+        "power_w":          ac_va,         # AC apparent power - the dedicated spec field
         "ac_out_power_va":  ac_va,
         "ac_out_voltage_v": ac_v,
         "ac_out_current_a": ac_i,
@@ -394,12 +394,12 @@ def _parse_inverter(dec: bytes) -> dict:
 
 def _parse_inverter_0x07(dec: bytes) -> dict:
     """
-    Parse record type 0x07 — VE.Bus Smart Dongle (custom dongle layout).
+    Parse record type 0x07 - VE.Bus Smart Dongle (custom dongle layout).
 
     Confirmed device
     ----------------
-    The 48V-2400W device in this installation is a **Victron VE.Bus Smart
-    Dongle** attached to a MultiPlus-II 48/5000/70-95 120V. The dongle
+    Confirmed against a **Victron VE.Bus Smart Dongle** attached to a
+    MultiPlus-II 48/5000/70-95 120V. The dongle
     broadcasts a custom non-bit-packed payload that does NOT match either:
       - the official spec for 0x03 (Inverter), nor
       - the published 0x0C (VE.Bus) layout from earlier dongle firmwares.
@@ -411,11 +411,11 @@ def _parse_inverter_0x07(dec: bytes) -> dict:
     ──────  ─────────   ────────────  ───────────────────────────────────────
     [0]     uint8       CONFIRMED     device_state (0x09=Inverting, 0xFF=NA)
     [1:3]   uint16 LE   CONFIRMED     battery_voltage in millivolts
-    [3]     0xFF        MARKER        constant — not a data field
+    [3]     0xFF        MARKER        constant - not a data field
     [4]     uint8       VARYING       slow-changing field; likely battery
                                       temperature with +40°C offset, but
                                       not yet confirmed against ground truth
-    [5:7]   0x0096      MARKER        constant 150 — not instantaneous power
+    [5:7]   0x0096      MARKER        constant 150 - not instantaneous power
     [7]     0x00        MARKER        constant
     [8]     uint8       VARYING       fast-changing field; clearly AC output
                                       load indicator but scale unknown
@@ -442,18 +442,18 @@ def _parse_inverter_0x07(dec: bytes) -> dict:
     ------------
     1. Run the monitor with `--log-level DEBUG`.
     2. At the same instant, note VC's AC Out Power and AC Out Current.
-    3. Read the `[inverter 0x07]` log line — note the `byte[8]` value.
+    3. Read the `[inverter 0x07]` log line - note the `byte[8]` value.
     4. Compute scale = VC_power / byte_8_value.
     5. Set ``_SCALE_WATTS`` below (e.g. to 2.0 if scale comes out 2.0 W/unit)
        or ``_SCALE_AMPS`` (e.g. 0.05 if 0.05A/unit gives correct current).
 
     Reference
     ---------
-    - keshavdv/victron-ble — has no parser for this dongle variant
-    - Fabian-Schmidt/esphome-victron_ble — lists VE.Bus as record 0x0C
+    - keshavdv/victron-ble - has no parser for this dongle variant
+    - Fabian-Schmidt/esphome-victron_ble - lists VE.Bus as record 0x0C
       with rich bit-packed fields; this dongle broadcasts 0x07 instead
       with a stripped-down byte-aligned layout
-    - Victron spec (2022-12-14) — labelled 0x07 "TBD"; never updated
+    - Victron spec (2022-12-14) - labelled 0x07 "TBD"; never updated
     """
     if len(dec) < 5:
         raise ValueError(f"Inverter 0x07 record too short ({len(dec)}B, need 5)")
@@ -461,7 +461,7 @@ def _parse_inverter_0x07(dec: bytes) -> dict:
     state     = dec[0]
     batt_mV   = struct.unpack_from("<H", dec, 1)[0]
     # bytes[3:5] as uint16 LE consistently reads in the 120-128V range (raw 12031-
-    # 12799 at 0.01V scale). byte[3] is always 0xFF which is suspicious — it
+    # 12799 at 0.01V scale). byte[3] is always 0xFF which is suspicious - it
     # could be a sentinel/marker rather than the low byte of a 16-bit field.
     # But the values match VC's 120V reading, so we include it with a caveat.
     ac_v_raw  = struct.unpack_from("<H", dec, 3)[0]
@@ -474,7 +474,7 @@ def _parse_inverter_0x07(dec: bytes) -> dict:
     # byte[8]: AC power indicator, fast-changing
     raw_load  = dec[8] if len(dec) >= 9 else None
 
-    # Calibration constants — set these once you have a paired VC reading
+    # Calibration constants - set these once you have a paired VC reading
     _SCALE_WATTS = None   # e.g. 2.0 if byte[8] is AC power in 2W units
     _SCALE_AMPS  = None   # e.g. 0.05 if byte[8] is AC current in 0.05A units
 
@@ -502,7 +502,7 @@ def _parse_inverter_0x07(dec: bytes) -> dict:
         "ac_out_power_va":    ac_w,
         "ac_out_voltage_v":   ac_v,
         "ac_out_current_a":   ac_a,
-        "raw_load_indicator": raw_load,   # byte[8] — varies with AC load
+        "raw_load_indicator": raw_load,   # byte[8] - varies with AC load
         "inverter_state":     _INVERTER_STATES.get(state, f"0x{state:02X}"),
         "alarm_reason":       None,
     }
@@ -510,15 +510,15 @@ def _parse_inverter_0x07(dec: bytes) -> dict:
 
 def _parse_inverter_rs(dec: bytes) -> dict:
     """
-    Parse record type 0x06 — Inverter RS.
+    Parse record type 0x06 - Inverter RS.
 
-    Different layout from the plain Inverter (0x03) — includes PV power,
+    Different layout from the plain Inverter (0x03) - includes PV power,
     yield today, and a real AC output power field.
 
     Field             Spec bit  Bytes    Bits  Scale    NA value
     ───────────────── ────────  ───────  ────  ───────  ────────
-    device_state        32       [0]       8   —        0xFF
-    charger_error       40       [1]       8   —        0xFF
+    device_state        32       [0]       8   -        0xFF
+    charger_error       40       [1]       8   -        0xFF
     battery_voltage     48       [2-3]    16   0.01V    0x7FFF  (int16)
     battery_current     64       [4-5]    16   0.1A     0x7FFF  (int16)
     pv_power            80       [6-7]    16   1W       0xFFFF  (uint16)
@@ -559,7 +559,7 @@ def _parse_inverter_rs(dec: bytes) -> dict:
 
 def _parse_bmv(dec: bytes) -> dict:
     """
-    Parse record type 0x02 — Battery Monitor (SmartShunt, BMV-712/702).
+    Parse record type 0x02 - Battery Monitor (SmartShunt, BMV-712/702).
 
     Layout per official Victron spec (bit offsets relative to decrypted[0]):
 
@@ -567,17 +567,17 @@ def _parse_bmv(dec: bytes) -> dict:
     ───── ───────   ────  ────────  ────────  ─────────────────
       0   [0-1]      16   1 min     0xFFFF    TTG (time to go)
      16   [2-3]      16   0.01V     0x7FFF    battery voltage (int16)
-     32   [4-5]      16   —         —         alarm reason
-     48   [6-7]      16   varies    —         aux (voltage/temp/mid)
-     64   [8]         2   —         0x3       aux input mode
+     32   [4-5]      16   -         -         alarm reason
+     48   [6-7]      16   varies    -         aux (voltage/temp/mid)
+     64   [8]         2   -         0x3       aux input mode
      66   [8.25]     22   0.001A    0x3FFFFF  battery current (int22)
      88   [11]       20   0.1Ah     0xFFFFF   consumed Ah (not parsed)
     108   [13.5]     10   0.1%      0x3FF     SOC
 
-    IMPORTANT — aux_input vs battery_current alignment:
+    IMPORTANT - aux_input vs battery_current alignment:
     The 2-bit aux_input field at bit 64 (byte 8 bits 0-1) precedes the
     22-bit battery_current field at bit 66 (byte 8 bits 2-23).
-    Reading a uint32 at byte 8 and masking bits 0-21 is WRONG — it
+    Reading a uint32 at byte 8 and masking bits 0-21 is WRONG - it
     captures 2 aux_input bits + only 20 current bits.
     Correct: aux_input = word & 0x3; i_raw = (word >> 2) & 0x3FFFFF.
 
@@ -629,7 +629,7 @@ def _parse_bmv(dec: bytes) -> dict:
 
 def _parse_dcenergy(dec: bytes) -> dict:
     """
-    Parse record type 0x08 — SmartShunt IP65 / DC Energy Meter.
+    Parse record type 0x08 - SmartShunt IP65 / DC Energy Meter.
 
     Similar to BMV but layout differs slightly:
       [0-1]  ttg          (uint16 LE, minutes; 0xFFFF = N/A)
@@ -669,12 +669,12 @@ def _parse_dcenergy(dec: bytes) -> dict:
 
 def _parse_vebus(dec: bytes) -> dict:
     """
-    Parse record type 0x0C — VE.Bus (VE.Bus Smart Dongle).
+    Parse record type 0x0C - VE.Bus (VE.Bus Smart Dongle).
 
     This is the richest Victron BLE record: the VE.Bus Smart Dongle plugged
     into a MultiPlus-II (or any VE.Bus inverter/charger) broadcasts battery
     voltage, battery current, temperature, SoC, active AC input, AC input
-    real power, AC output real power, alarm level, and device state — all in
+    real power, AC output real power, alarm level, and device state - all in
     a single 160-bit (20-byte) encrypted payload.
 
     Confirmed device
@@ -693,15 +693,15 @@ def _parse_vebus(dec: bytes) -> dict:
 
     Offset  Bits  Field               Units   Scale   NA      Register
     ──────  ────  ──────────────────  ──────  ──────  ──────  ─────────────────────────
-         0     8  device_state        —       —       0xFF    VE_REG_DEVICE_STATE
-         8     8  vebus_error         —       —       0xFF    VE_REG_VEBUS_VEBUS_ERROR
+         0     8  device_state        -       -       0xFF    VE_REG_DEVICE_STATE
+         8     8  vebus_error         -       -       0xFF    VE_REG_VEBUS_VEBUS_ERROR
         16    16  battery_current     A       0.1A    0x7FFF  VE_REG_DC_CHANNEL1_CURRENT (signed int16)
         32    14  battery_voltage     V       0.01V   0x3FFF  VE_REG_DC_CHANNEL1_VOLTAGE
-        46     2  active_ac_in        —       —       0x3     VE_REG_AC_IN_ACTIVE
+        46     2  active_ac_in        -       -       0x3     VE_REG_AC_IN_ACTIVE
                                                               0=AC1, 1=AC2, 2=not connected, 3=unknown
         48    19  ac_in_power         W       1W      0x3FFFF VE_REG_AC_IN_{1,2}_REAL_POWER (signed int19)
         67    19  ac_out_power        W       1W      0x3FFFF VE_REG_AC_OUT_REAL_POWER (signed int19)
-        86     2  alarm               —       —       3       VE_REG_ALARM_NOTIFICATION
+        86     2  alarm               -       -       3       VE_REG_ALARM_NOTIFICATION
                                                               0=ok, 1=warning, 2=alarm
         88     7  battery_temperature °C      1°C     0x7F    VE_REG_BAT_TEMPERATURE (raw - 40)
         95     7  soc                 %       1%      0x7F    VE_REG_SOC (0..126%)
@@ -824,15 +824,15 @@ def _parse_vebus(dec: bytes) -> dict:
 PARSERS: dict[int, callable] = {
     0x01: _parse_solar,           # Solar Charger (MPPT)
     0x02: _parse_bmv,             # Battery Monitor (SmartShunt, BMV-712/702)
-    0x03: _parse_inverter,        # Inverter (Phoenix) — classic spec layout
+    0x03: _parse_inverter,        # Inverter (Phoenix) - classic spec layout
     0x04: _parse_bmv,             # DC/DC Converter (BMV-like layout)
     0x05: _parse_bmv,             # SmartLithium (BMV-like layout)
     0x06: _parse_inverter_rs,     # Inverter RS
-    0x07: _parse_vebus,           # VE.Bus Smart Dongle — same bit layout as 0x0C
+    0x07: _parse_vebus,           # VE.Bus Smart Dongle - same bit layout as 0x0C
     0x08: _parse_dcenergy,        # AC Charger / SmartShunt IP65
     0x09: _parse_bmv,             # Smart Battery Protect
     0x0B: _parse_inverter_rs,     # Multi RS (same layout as Inverter RS)
-    0x0C: _parse_vebus,           # VE.Bus Smart Dongle — full spec layout
+    0x0C: _parse_vebus,           # VE.Bus Smart Dongle - full spec layout
     0x0D: _parse_dcenergy,        # DC Energy Meter
     0x0E: _parse_bmv,             # Orion XS (BMV-like layout)
 }
@@ -893,19 +893,19 @@ def read_victron_advertisement(
     # ── Sort: prefer the record type most likely to be from THIS device ──────
     # Priority order:
     #   1. The device's own Instant Readout record (NOT the generic 0x01 beacon).
-    #      Among non-0x01 types, prefer LOWER numbers — 0x01 devices (MPPT) often
+    #      Among non-0x01 types, prefer LOWER numbers - 0x01 devices (MPPT) often
     #      also broadcast 0x02 (BMV) VE.Smart network data; 0x01 < 0x02 so the
     #      MPPT's own data wins over the shared network data.
     #   2. The generic 0x01 Solar Charger beacon last.
     def _priority(p: bytes) -> tuple:
         rt, _, _ = parse_payload(p)
         if rt == 0x01:
-            return (2, rt)   # generic beacon — last resort
+            return (2, rt)   # generic beacon - last resort
         return (0, rt)       # device-specific: LOWER type numbers first (0x01 MPPT < 0x02 BMV)
 
     candidates.sort(key=_priority)
 
-    # Log candidates at DEBUG — use --log-level DEBUG to see them when
+    # Log candidates at DEBUG - use --log-level DEBUG to see them when
     # diagnosing key/format issues. These can total hundreds of lines per
     # poll cycle when many Victron devices are present, so they're not
     # shown at the default INFO level.
@@ -956,24 +956,24 @@ def read_victron_advertisement(
         if allowed_records is None:
             log.warning(
                 f"  [Victron] {name}: unknown type override "
-                f"'{device_type_override}' — ignoring"
+                f"'{device_type_override}' - ignoring"
             )
 
     # ── Try each candidate until one decrypts successfully ───────────────────
     # Sort so richer/more-specific parsers are tried before fallback ones.
     # In particular, 0x0C (VE.Bus full spec) must be tried before 0x07
-    # (VE.Bus older/limited layout) — both are valid for type=inverter,
+    # (VE.Bus older/limited layout) - both are valid for type=inverter,
     # but 0x07 can decrypt *and* pass plausibility checks even when the
     # packet is actually a 0x0C record with a different byte layout.
     _RECORD_PRIORITY: dict[int, int] = {
-        0x01: 0,   # Solar Charger — unique, no conflict
-        0x02: 0,   # Battery Monitor — unique
-        0x0C: 1,   # VE.Bus full spec — try before 0x07
+        0x01: 0,   # Solar Charger - unique, no conflict
+        0x02: 0,   # Battery Monitor - unique
+        0x0C: 1,   # VE.Bus full spec - try before 0x07
         0x03: 2,   # Inverter classic
         0x06: 2,   # Inverter RS
         0x0B: 2,   # Multi RS
-        0x07: 9,   # VE.Bus older/fallback — try last among inverter types
-        0x0D: 0,   # DC Energy Meter — unique
+        0x07: 9,   # VE.Bus older/fallback - try last among inverter types
+        0x0D: 0,   # DC Energy Meter - unique
     }
 
     def _candidate_sort_key(payload: bytes) -> int:
@@ -1013,7 +1013,7 @@ def read_victron_advertisement(
         decrypted = try_decrypt(nonce_val, ciphertext, key_bytes)
         if decrypted is None:
             last_error = (
-                "cryptography package not installed — "
+                "cryptography package not installed - "
                 "run: pip install cryptography"
             )
             break   # no point trying further candidates
@@ -1048,12 +1048,12 @@ def read_victron_advertisement(
         v_check = parsed.get("voltage_v")
         a_check = parsed.get("current_a")
 
-        # Voltage plausibility — upper bound is per device type:
+        # Voltage plausibility - upper bound is per device type:
         #   inverter / vebus: up to 150V covers 48V nominal systems including
         #       absorption voltage (~ 58V) and any measurement headroom.
         #   mppt / solar charger: same 150V ceiling (PV input can be higher but
         #       the battery output reported is DC bus, same as inverter).
-        #   monitor (SmartShunt, BMV): battery bus only — 80V ceiling is
+        #   monitor (SmartShunt, BMV): battery bus only - 80V ceiling is
         #       generous for a 48V system (max absorption ≈ 58.4V). If we see
         #       > 80V from a monitor record it is almost certainly parser garbage
         #       from a mismatched or foreign payload, not a real battery voltage.
@@ -1082,7 +1082,7 @@ def read_victron_advertisement(
             )
             continue
 
-        # Current plausibility — ±2000A catches gross parser mismatches.
+        # Current plausibility - ±2000A catches gross parser mismatches.
         # For monitor-type (SmartShunt, BMV) the hardware maximum is ±2000A
         # so we keep that ceiling but flag suspiciously large values in debug.
         if a_check is not None and abs(a_check) > 2000.0:

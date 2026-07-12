@@ -1,11 +1,11 @@
 """
-mcp_server.py — Solar Monitor MCP Server
+mcp_server.py - Solar Monitor MCP Server
 =========================================
 Exposes solar system data to AI assistants (Claude Desktop, Cursor, etc.)
 via the Model Context Protocol (MCP) over stdio transport.
 
 The server implements MCP 1.0 using JSON-RPC 2.0 over stdin/stdout.
-No third-party MCP SDK is required — only the Python standard library and
+No third-party MCP SDK is required - only the Python standard library and
 the solar_monitor package.
 
 Usage
@@ -39,17 +39,18 @@ All security settings live in the [mcp] section of config.ini:
 
 Available tools
 ---------------
-  get_system_status    — aggregate: total PV W, AC out W, avg SoC, pack count
-  get_battery_status   — all BMS packs: V, A, SoC, Wh, TTE/TTF, faults
-  get_solar_status     — all MPPT chargers: PV W, yield Wh, charger state
-  get_inverter_status  — all inverters: AC out W, state, alarms, battery V/A
-  get_device           — single device by name or MAC address
-  list_devices         — all configured devices with type and online status
-  get_alerts           — active faults, alarms, offline devices system-wide
-  get_data_age         — timestamp of last successful poll per section
+  get_system_status    - aggregate: total PV W, AC out W, avg SoC, pack count
+  get_battery_status   - all BMS packs: V, A, SoC, Wh, TTE/TTF, faults
+  get_solar_status     - all MPPT chargers: PV W, yield Wh, charger state
+  get_inverter_status  - all inverters: AC out W, state, alarms, battery V/A
+  get_device           - single device by name or MAC address
+  list_devices         - all configured devices with type and online status
+  get_alerts           - active faults, alarms, offline devices system-wide
+  get_data_age         - timestamp of last successful poll per section
 """
 
 import argparse
+import hmac
 import json
 import logging
 import sys
@@ -93,7 +94,10 @@ class McpConfig:
         """Return True if the provided key matches, or no key is required."""
         if not self.api_key:
             return True
-        return provided == self.api_key
+        if not isinstance(provided, str):
+            return False
+        # Constant-time comparison; avoids leaking key length/prefix via timing
+        return hmac.compare_digest(provided, self.api_key)
 
 
 def _load_mcp_config(ini_path: str) -> McpConfig:
@@ -182,7 +186,7 @@ def _tte(h: Optional[float]) -> Optional[str]:
 
 def tool_get_system_status(state: dict) -> dict:
     """
-    High-level system summary — one number per energy flow.
+    High-level system summary - one number per energy flow.
 
     Returns totals across all online devices so an assistant can answer
     questions like "how much solar power am I generating?" or
@@ -726,7 +730,7 @@ def _handle_tools_call(req: dict, cfg: McpConfig, state_path: str,
 
     # ── Security checks ────────────────────────────────────────────────────
     # API key check
-    if cfg.api_key and args.get("api_key") != cfg.api_key:
+    if not cfg.check_api_key(args.get("api_key")):
         log.warning(f"tools/call '{name}' rejected: bad or missing api_key")
         return _err(req_id, _UNAUTHORIZED, "Invalid or missing api_key")
 
@@ -819,7 +823,7 @@ def run_stdio(cfg: McpConfig, state_path: str) -> None:
     limiter = RateLimiter(cfg.rate_limit)
 
     log.info(
-        f"Solar Monitor MCP server starting — state: {state_path}  "
+        f"Solar Monitor MCP server starting - state: {state_path}  "
         f"tools: {list(TOOLS.keys()) if not cfg.allowed_tools else cfg.allowed_tools}  "
         f"api_key: {'set' if cfg.api_key else 'none'}  "
         f"rate_limit: {cfg.rate_limit}/min"
@@ -845,7 +849,7 @@ def run_stdio(cfg: McpConfig, state_path: str) -> None:
             except Exception:
                 pass
 
-    log.info("stdin closed — MCP server exiting")
+    log.info("stdin closed - MCP server exiting")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -854,7 +858,7 @@ def run_stdio(cfg: McpConfig, state_path: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Solar Monitor MCP Server — exposes solar data to AI assistants",
+        description="Solar Monitor MCP Server - exposes solar data to AI assistants",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Claude Desktop config (~/.config/claude/claude_desktop_config.json):
@@ -900,7 +904,7 @@ config.ini [mcp] section:
         if "general" in p:
             state_path = p["general"].get("state_file", state_path)
     else:
-        log.warning(f"Config file not found: {config_path} — using defaults")
+        log.warning(f"Config file not found: {config_path} - using defaults")
 
     if args.state_file:
         state_path = args.state_file

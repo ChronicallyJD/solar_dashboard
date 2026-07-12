@@ -1,7 +1,7 @@
 """
-solar_monitor.py — Supervisor process
+solar_monitor.py - Supervisor process
 ======================================
-Starts and supervises worker subprocesses — one per data source.
+Starts and supervises worker subprocesses - one per data source.
 Each worker runs independently, writes to its own state section, and
 is restarted automatically if it crashes.
 
@@ -23,7 +23,7 @@ Adding a new data source
 1. Write a worker script (e.g. ecoflow_monitor.py) following the contract.
 2. Add a WorkerSpec to WORKER_REGISTRY in this file.
 3. Add the corresponding config section (e.g. [ecoflow]).
-4. That's it — the supervisor picks it up automatically when the section
+4. That's it - the supervisor picks it up automatically when the section
    is populated.
 
 Crash policy
@@ -53,7 +53,7 @@ log = logging.getLogger("supervisor")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Worker registry — add new data sources here
+# Worker registry - add new data sources here
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -126,7 +126,7 @@ MAX_BACKOFF          = 60.0   # seconds
 
 class WorkerProcess:
     """
-    Manages a single worker subprocess — launch, log streaming, restart.
+    Manages a single worker subprocess - launch, log streaming, restart.
     """
 
     def __init__(
@@ -223,7 +223,7 @@ class WorkerProcess:
             if len(self._crash_times) > MAX_CRASHES_PER_HOUR:
                 log.error(
                     f"[{self.name}] Worker crashed {len(self._crash_times)} times "
-                    f"in the last hour — giving up. Fix the error and restart the "
+                    f"in the last hour - giving up. Fix the error and restart the "
                     f"supervisor to re-enable this worker."
                 )
                 self._stopped = True
@@ -249,7 +249,7 @@ class WorkerProcess:
                 self._proc.terminate()
                 await asyncio.wait_for(self._proc.wait(), timeout=10.0)
             except asyncio.TimeoutError:
-                log.warning(f"[{self.name}] SIGTERM timed out — sending SIGKILL")
+                log.warning(f"[{self.name}] SIGTERM timed out - sending SIGKILL")
                 try:
                     self._proc.kill()
                 except Exception:
@@ -331,7 +331,7 @@ def _section_has_devices(ini_path: str, section_names: list[str]) -> bool:
 async def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Solar Monitor supervisor — manages worker subprocesses.\n"
+            "Solar Monitor supervisor - manages worker subprocesses.\n"
             "Workers are started automatically based on populated config sections."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -375,7 +375,7 @@ async def main() -> None:
             log.info(f"Worker enabled: {spec.name} ({spec.script})")
         else:
             log.info(
-                f"Worker skipped: {spec.name} — "
+                f"Worker skipped: {spec.name} - "
                 f"no [{'/'.join(spec.config_sections)}] devices configured"
             )
 
@@ -384,18 +384,18 @@ async def main() -> None:
         for spec in active:
             print(f"  {spec.name:12}  {spec.script}")
         if not active:
-            print("  (none — all config sections empty)")
+            print("  (none - all config sections empty)")
         return
 
     if not active:
         log.error(
-            "No workers to start — add devices to [bms] and/or [victron] "
+            "No workers to start - add devices to [bms] and/or [victron] "
             "in your config file."
         )
         sys.exit(1)
 
     log.info(
-        f"Solar Monitor supervisor starting — "
+        f"Solar Monitor supervisor starting - "
         f"{len(active)} worker(s)  config: {config_path}"
     )
 
@@ -433,7 +433,7 @@ async def main() -> None:
     if cfg.server.enabled:
         from solar_monitor.server import run_https_server
         log.info(
-            f"HTTPS server enabled — https://{cfg.server.host}:{cfg.server.port}/"
+            f"HTTPS server enabled - https://{cfg.server.host}:{cfg.server.port}/"
         )
         tasks.append(asyncio.create_task(
             run_https_server(cfg.server, output_path, cfg.state_file)

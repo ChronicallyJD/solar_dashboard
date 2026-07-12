@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-utils/purge_history.py — Solar Monitor history database purge utility
+utils/purge_history.py - Solar Monitor history database purge utility
 ======================================================================
 Delete historical readings from the SQLite database by date range,
 device name, or device type.
 
 Usage
 -----
-    # Dry run — see what would be deleted without deleting anything
+    # Dry run - see what would be deleted without deleting anything
     python utils/purge_history.py --config config.ini --before 2023-01-01 --dry-run
 
     # Delete everything before a specific date
@@ -92,7 +92,7 @@ def _print_devices(db: HistoryDB) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Solar Monitor — purge historical readings from SQLite",
+        description="Solar Monitor - purge historical readings from SQLite",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Usage")[1] if "Usage" in __doc__ else "",
     )
@@ -171,7 +171,7 @@ def main() -> None:
     # ── Enforce retention ──────────────────────────────────────────────────────
     if args.enforce_retention:
         if cfg.retention_days == 0:
-            print("Retention is set to 0 (keep forever) — nothing to purge.")
+            print("Retention is set to 0 (keep forever) - nothing to purge.")
             return
 
         from datetime import datetime, timedelta, timezone
@@ -238,7 +238,7 @@ def main() -> None:
     )
 
     if count == 0:
-        print("\nNo matching rows found — nothing to delete.")
+        print("\nNo matching rows found - nothing to delete.")
         db.close()
         return
 

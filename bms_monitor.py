@@ -1,7 +1,7 @@
 """
-bms_monitor.py — JBD/Vatrer BMS worker process
+bms_monitor.py - JBD/Vatrer BMS worker process
 ================================================
-Connects directly to BMS devices by MAC — NO BLE scanning.
+Connects directly to BMS devices by MAC - NO BLE scanning.
 Designed to run standalone or under solar_monitor.py supervisor.
 
 Worker contract
@@ -29,7 +29,7 @@ _MIN_BMS_GAP = 30.0
 
 async def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Solar Monitor — BMS worker (JBD/Vatrer, direct connection)")
+        description="Solar Monitor - BMS worker (JBD/Vatrer, direct connection)")
     parser.add_argument("--config",      metavar="FILE",
                         help=f"Config file (default: {DEFAULT_INI_PATH})")
     parser.add_argument("--state-file",  metavar="FILE",
@@ -67,7 +67,7 @@ async def main() -> None:
         log.info(f"BMS history DB: {cfg.history.db_path}  retention: {cfg.history.retention_days}d")
 
     log.info(
-        f"BMS worker starting — state: {cfg.state_file}  "
+        f"BMS worker starting - state: {cfg.state_file}  "
         f"interval: {interval}s  (direct MAC connection, no scan)"
     )
 

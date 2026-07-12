@@ -1,5 +1,5 @@
 """
-victron_monitor.py — Victron BLE worker process
+victron_monitor.py - Victron BLE worker process
 =================================================
 Passive MAC-filtered BLE scan for Victron Instant Readout.
 Designed to run standalone or under solar_monitor.py supervisor.
@@ -29,7 +29,7 @@ _MIN_VICTRON_GAP = 10.0
 
 async def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Solar Monitor — Victron worker (passive BLE scan)")
+        description="Solar Monitor - Victron worker (passive BLE scan)")
     parser.add_argument("--config",      metavar="FILE",
                         help=f"Config file (default: {DEFAULT_INI_PATH})")
     parser.add_argument("--state-file",  metavar="FILE",
@@ -70,7 +70,7 @@ async def main() -> None:
         log.info(f"Victron history DB: {cfg.history.db_path}  retention: {cfg.history.retention_days}d")
 
     log.info(
-        f"Victron worker starting — state: {cfg.state_file}  "
+        f"Victron worker starting - state: {cfg.state_file}  "
         f"interval: {interval}s  passive scan  {len(macs)} MAC(s)"
     )
 

@@ -1,4 +1,4 @@
-# Solar Monitor — config.ini reference
+# Solar Monitor: config.ini reference
 
 Complete reference for every configuration key. All settings live in a single
 `config.ini` file. Section order does not matter. Unknown keys are ignored.
@@ -27,7 +27,7 @@ MultiPlus   = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverte
 
 ## [general]
 
-Core runtime settings. All keys are optional — the defaults shown are used
+Core runtime settings. All keys are optional; the defaults shown are used
 when a key is absent.
 
 | Key | Default | Description |
@@ -36,7 +36,7 @@ when a key is absent.
 | `state_file` | `solar_state.json` | Shared state file used for inter-process communication between workers |
 | `bms_interval` | `120` | Seconds between BMS poll cycles (minimum enforced: 30) |
 | `victron_interval` | `30` | Seconds between Victron BLE scan cycles (minimum enforced: 10) |
-| `interval` | `30` | Legacy combined poll interval — only used by `jbd_bms_monitor.py` |
+| `interval` | `30` | Legacy combined poll interval, only used by `jbd_bms_monitor.py` |
 | `scan_timeout` | `10` | Seconds to listen for BLE advertisements per Victron cycle |
 | `max_history` | `600` | Number of data points retained per device for dashboard charts |
 | `log_level` | `INFO` | Log verbosity: `DEBUG` / `INFO` / `WARNING` / `ERROR` |
@@ -47,20 +47,8 @@ when a key is absent.
 | Setting | Minimum | Recommended | Notes |
 |---|---|---|---|
 | `bms_interval` | 30 s | 120 s | GATT connections take 5–35 s per pack; add 40 s per pack for multi-pack systems |
-| `victron_interval` | 10 s | 30 s | Passive BLE scan — very fast |
-| `scan_timeout` | — | 10 s | Must be long enough for all Victron record types to rotate through |
-
-```ini
-[general]
-output           = /var/www/html/solar.html
-state_file       = solar_state.json
-bms_interval     = 120
-victron_interval = 30
-scan_timeout     = 10
-max_history      = 600
-log_level        = INFO
-theme            = business
-```
+| `victron_interval` | 10 s | 30 s | Passive BLE scan, very fast |
+| `scan_timeout` | none | 10 s | Must be long enough for all Victron record types to rotate through |
 
 ---
 
@@ -74,10 +62,10 @@ empty to disable BMS polling entirely.
 Label = MAC_ADDRESS [ : password ]
 ```
 
-- **Label** — display name shown on the dashboard card and in logs
-- **MAC** — Bluetooth address in any standard format: `AA:BB:CC:DD:EE:FF`,
+- **Label**: display name shown on the dashboard card and in logs
+- **MAC**: Bluetooth address in any standard format: `AA:BB:CC:DD:EE:FF`,
   `AA-BB-CC-DD-EE-FF`, or `AABBCCDDEEFF`
-- **password** — optional 6-digit numeric BMS password; omit the colon
+- **password**: optional 6-digit numeric BMS password; omit the colon
   entirely if no password is set. Common defaults: `123456`, `000000`, `888888`
 
 ```ini
@@ -107,10 +95,10 @@ compatibility. The section may be omitted to disable Victron polling.
 Label = MAC : KEY  [ type=mppt|inverter|monitor|dcdc ]
 ```
 
-- **Label** — display name
-- **MAC** — Bluetooth address (`AA:BB:CC:DD:EE:FF`)
-- **KEY** — 32-character Advertisement Key from VictronConnect (see below)
-- **type** — optional; controls dashboard card layout and accepted record
+- **Label**: display name
+- **MAC**: Bluetooth address (`AA:BB:CC:DD:EE:FF`)
+- **KEY**: 32-character Advertisement Key from VictronConnect (see below)
+- **type**: optional; controls dashboard card layout and accepted record
   types. Inferred from the first successful parse if omitted.
 
 ### Getting MAC and KEY from VictronConnect
@@ -179,7 +167,8 @@ Built-in HTTPS server. Disabled by default. When enabled, runs as an
 | `key_file` | `server.key` | TLS private key (PEM format) |
 | `auto_cert` | `true` | Auto-generate a self-signed cert when `cert_file` is missing |
 
-Boolean values accept: `true` / `false` / `yes` / `no` / `1` / `0` / `on` / `off`.
+All boolean keys (in any section) accept `true` / `false` / `yes` / `no` /
+`1` / `0` / `on` / `off`, case-insensitive; surrounding whitespace is stripped.
 
 **Routes served:**
 
@@ -233,22 +222,12 @@ write every successful reading to the database after each poll cycle.
 | `retention_days` | `1095` | Days of history to keep. `0` = keep forever (no automatic deletion) |
 | `vacuum_interval_days` | `7` | Run `VACUUM` every N days to compact the database file |
 
-**Retention policy** is enforced automatically — at most once per hour per
+**Retention policy** is enforced automatically, at most once per hour per
 worker process. Rows older than `retention_days` are deleted during normal
 write cycles; no cron job is needed.
 
 **Disk space:** roughly 3–5 MB/month with 4 devices at default poll rates.
 A 3-year store with 4 devices typically fits under 200 MB.
-
-**Retention reference:**
-
-| Period | `retention_days` |
-|---|---|
-| 1 year | 365 |
-| 2 years | 730 |
-| 3 years (default) | 1095 |
-| 5 years | 1825 |
-| Keep forever | 0 |
 
 ```ini
 [history]
@@ -280,7 +259,7 @@ python utils/query_history.py --config config.ini \
 ## [mcp]
 
 MCP (Model Context Protocol) server for AI assistant integration. Runs over
-stdio — Claude Desktop launches it as a subprocess; no port or TLS needed.
+stdio: Claude Desktop launches it as a subprocess; no port or TLS needed.
 Enabled by default when the section is present; all security features are
 off by default.
 
@@ -293,7 +272,7 @@ off by default.
 | `require_local` | `true` | Documents intent (stdio is always local; no network enforcement) |
 | `log_requests` | `false` | Log every tool call name to stderr for auditing |
 
-**`read_only` is always `true`** — the MCP server never writes to any file,
+**`read_only` is always `true`**: the MCP server never writes to any file,
 regardless of configuration.
 
 **Available tools:** `get_system_status`, `get_battery_status`,
@@ -346,15 +325,15 @@ allowed_tools = get_system_status, get_alerts, list_devices
 # Use an absolute path when running as a systemd service.
 output = /home/pi/solar_monitor/dashboard.html
 
-# Shared state file — workers communicate through this JSON file.
+# Shared state file: workers communicate through this JSON file.
 # Each worker owns one section; writes are atomic (temp file → rename).
 state_file = solar_state.json
 
-# BMS poll interval — GATT connections are slow (5–35 s per pack).
+# BMS poll interval. GATT connections are slow (5–35 s per pack).
 # For 4 packs: 4 × 40 s ≈ 160 s minimum; 120 s is fine for 1–2 packs.
 bms_interval = 120
 
-# Victron poll interval — passive BLE scan, fast.
+# Victron poll interval. Passive BLE scan, fast.
 victron_interval = 30
 
 # How long to listen for Victron BLE advertisements each cycle.
@@ -428,18 +407,6 @@ rate_limit    = 60
 require_local = true
 log_requests  = false
 ```
-
----
-
-## Boolean values
-
-All boolean config keys accept any of:
-
-| Truthy | Falsy |
-|---|---|
-| `true`, `yes`, `on`, `1` | `false`, `no`, `off`, `0` |
-
-Case-insensitive. Leading/trailing whitespace is stripped.
 
 ---
 

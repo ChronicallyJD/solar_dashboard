@@ -45,7 +45,9 @@ sys.modules.update({
     "bleak.backends": backends,
     "bleak.backends.device": dev_m,
 })
-sys.path.insert(0, "/home/claude")
+import os
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 # ── Stub Rich ─────────────────────────────────────────────────────────────────
 
@@ -101,7 +103,7 @@ for mod_name, attrs in [
 # ── Import module under test ──────────────────────────────────────────────────
 import importlib.util
 _spec = importlib.util.spec_from_file_location(
-    "console_monitor", "/home/claude/console_monitor.py"
+    "console_monitor", f"{REPO_ROOT}/console_monitor.py"
 )
 cm = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cm)
@@ -588,7 +590,7 @@ class TestMtime(unittest.TestCase):
 class TestSourceGuarantees(unittest.TestCase):
 
     def _src(self):
-        with open("/home/claude/console_monitor.py") as f:
+        with open(f"{REPO_ROOT}/console_monitor.py") as f:
             return f.read()
 
     def test_rich_import_guard_present(self):

@@ -1,11 +1,11 @@
 """
-solar_monitor/scanner.py — BLE device resolution and poll orchestration
+solar_monitor/scanner.py - BLE device resolution and poll orchestration
 ========================================================================
 Two separate strategies, matching the two device types:
 
 BMS (JBD/Vatrer)
 ----------------
-Connects directly by MAC address via BleakClient — NO scanning required.
+Connects directly by MAC address via BleakClient - NO scanning required.
 BlueZ connects to the device immediately if it is advertising, or attempts
 a direct connection if it is in its BlueZ cache.  This means:
   - No radio contention with the Victron process
@@ -19,9 +19,9 @@ broadcast encrypted packets continuously and there is no request/response
 mechanism.  We must scan to receive them.
 
 The scan uses:
-  - ``scanning_mode="passive"`` — the adapter listens without sending scan
+  - ``scanning_mode="passive"`` - the adapter listens without sending scan
     requests, reducing radio activity and avoiding interference.
-  - A MAC address filter — BlueZ only delivers callbacks for the specific
+  - A MAC address filter - BlueZ only delivers callbacks for the specific
     MACs in our config, ignoring all other BLE traffic.  This is efficient
     and eliminates the need for post-scan filtering.
 
@@ -79,7 +79,7 @@ _TRANSIENT_ERRORS: tuple[str, ...] = (
     "keyerror",        # same error caught at a higher level
 )
 
-# Error substrings that indicate a permanent failure — stop retrying immediately.
+# Error substrings that indicate a permanent failure - stop retrying immediately.
 _PERMANENT_ERRORS: tuple[str, ...] = (
     "rejected password",
     "no compatible jbd",
@@ -96,7 +96,7 @@ class VictronScanner:
     """
     Passive, MAC-filtered BLE scanner for Victron Instant Readout.
 
-    Uses ``scanning_mode="passive"`` so the adapter only listens — it never
+    Uses ``scanning_mode="passive"`` so the adapter only listens - it never
     sends scan requests.  This is sufficient for Victron devices (they
     broadcast without solicitation) and reduces radio activity.
 
@@ -117,7 +117,7 @@ class VictronScanner:
         ----------
         mac_addresses:
             Upper-cased Bluetooth MAC addresses of Victron devices to watch.
-            Empty list means accept all — useful for auto-discovery.
+            Empty list means accept all - useful for auto-discovery.
         """
         self._macs:             set[str]             = {m.upper() for m in mac_addresses}
         self._adv:              dict[str, tuple]      = {}   # mac → (BLEDevice, adv_data)
@@ -125,7 +125,7 @@ class VictronScanner:
         self._scanner: Optional[BleakScanner]         = None
 
     def _cb(self, device: BLEDevice, adv_data) -> None:
-        """BleakScanner detection callback — called for every matching advertisement."""
+        """BleakScanner detection callback - called for every matching advertisement."""
         mac = device.address.upper()
         if self._macs and mac not in self._macs:
             return
@@ -166,7 +166,7 @@ class VictronScanner:
         types to deliver; different bleak versions expect different formats.
         We try both formats before falling back to active scanning.
 
-        Active scanning works identically for Victron — their devices
+        Active scanning works identically for Victron - their devices
         broadcast continuously without solicitation, so the adapter receives
         the same advertisement data regardless of scan mode.
 
@@ -231,7 +231,7 @@ class VictronScanner:
                     if last_exc is not None:
                         log.warning(
                             f"VictronScanner: passive scan unavailable "
-                            f"({type(last_exc).__name__}: {last_exc}) — "
+                            f"({type(last_exc).__name__}: {last_exc}) - "
                             f"using active scanning (data unaffected)"
                         )
                     else:
@@ -245,7 +245,7 @@ class VictronScanner:
                 await self._stop_scanner()
                 continue
         else:
-            # All attempts failed — raise the last error
+            # All attempts failed - raise the last error
             raise RuntimeError(
                 f"VictronScanner: all scan modes failed. "
                 f"Last error: {last_exc}"
@@ -286,7 +286,7 @@ async def _poll_bms(
     """
     Poll all configured BMS devices sequentially by connecting directly.
 
-    No scanning needed — each device is addressed by its MAC address.
+    No scanning needed - each device is addressed by its MAC address.
     BleakClient(address) asks BlueZ to connect directly, which works as long
     as the device has advertised recently enough to be in BlueZ's cache, or
     the device is currently advertising (BlueZ will discover it on-demand).
@@ -300,7 +300,7 @@ async def _poll_bms(
         friendly = dc.name
 
         if not dc.mac:
-            # No MAC — cannot connect directly; return an error reading
+            # No MAC - cannot connect directly; return an error reading
             return DeviceReading(
                 address=address, name=friendly, device_type="bms",
                 timestamp=datetime.now().isoformat(timespec="seconds"),
@@ -365,7 +365,7 @@ def _poll_victron(
     """
     Build Victron DeviceReadings from the payloads accumulated by *scanner*.
 
-    Synchronous — no BLE connections, no waiting.  All data comes from the
+    Synchronous - no BLE connections, no waiting.  All data comes from the
     advertisements received during scanner.scan().
     """
     readings: list[DeviceReading] = []

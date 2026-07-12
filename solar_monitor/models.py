@@ -1,5 +1,5 @@
 """
-solar_monitor/models.py — Shared data model
+solar_monitor/models.py - Shared data model
 ============================================
 Central DeviceReading dataclass used by all protocol modules and the
 dashboard renderer. Having it in a separate module avoids circular imports
@@ -18,14 +18,14 @@ class DeviceReading:
     applicable to a device type are left as None.
 
     device_type values:
-        "bms"      — JBD / Vatrer battery pack
-        "mppt"     — Victron Solar Charger
-        "inverter" — Victron Inverter (Phoenix, MultiPlus, etc.)
-        "monitor"  — Victron Battery Monitor (SmartShunt, BMV)
-        "dcdc"     — Victron DC-DC Converter / Orion
-        "lithium"  — Victron SmartLithium
-        "meter"    — Victron DC Energy Meter
-        "victron"  — Unrecognised Victron record type
+        "bms"      - JBD / Vatrer battery pack
+        "mppt"     - Victron Solar Charger
+        "inverter" - Victron Inverter (Phoenix, MultiPlus, etc.)
+        "monitor"  - Victron Battery Monitor (SmartShunt, BMV)
+        "dcdc"     - Victron DC-DC Converter / Orion
+        "lithium"  - Victron SmartLithium
+        "meter"    - Victron DC Energy Meter
+        "victron"  - Unrecognised Victron record type
     """
     address:         str
     name:            str
@@ -37,7 +37,7 @@ class DeviceReading:
     current_a:       Optional[float] = None   # DC current (+ = charge, - = discharge)
     power_w:         Optional[float] = None   # DC power; for inverters = AC apparent power
 
-    # BMS / Battery Monitor fields — from JBD register 0x03
+    # BMS / Battery Monitor fields - from JBD register 0x03
     capacity_pct:    Optional[int]   = None   # State of charge 0-100 %
     cell_count:      Optional[int]   = None   # Number of cells in series
     temp_c:          list            = field(default_factory=list)  # NTC readings (°C)
@@ -76,7 +76,7 @@ class DeviceReading:
     vebus_error:      Optional[int]   = None  # VE.Bus error code (0 = no error)
     temperature_c:    Optional[float] = None  # Battery temperature from dongle (°C)
 
-    # MultiPlus-II 0x07 record diagnostic — byte[8] of decrypted payload.
+    # MultiPlus-II 0x07 record diagnostic - byte[8] of decrypted payload.
     # Empirically varies with AC load but scale is not yet determined.
     # Exposed in dashboard for user calibration against VictronConnect.
     raw_load_indicator: Optional[int] = None

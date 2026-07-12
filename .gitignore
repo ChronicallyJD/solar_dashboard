@@ -1,0 +1,33 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Runtime output / generated state
+dashboard.html
+solar_state.json
+solar_history.db
+solar_history.db-*
+
+# Local config and TLS material (never commit)
+monitor.ini
+config.ini
+server.crt
+server.key
+
+# Editor backups
+*~
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Coverage artifacts
+.coverage
+htmlcov/

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-utils/query_history.py — Solar Monitor history query and export utility
+utils/query_history.py - Solar Monitor history query and export utility
 ========================================================================
 Query the SQLite history database and export readings as CSV or JSON.
 
@@ -116,7 +116,7 @@ def _export_json(rows: list[dict]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Solar Monitor — query and export historical readings",
+        description="Solar Monitor - query and export historical readings",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Usage")[1] if "Usage" in __doc__ else "",
     )

@@ -1,5 +1,5 @@
 """
-solar_monitor/__main__.py — CLI entry point
+solar_monitor/__main__.py - CLI entry point
 ===========================================
 Run the Solar Monitor as a package:
     python -m solar_monitor
@@ -28,7 +28,7 @@ async def main() -> None:
     """Parse CLI arguments, load config, and run the polling loop."""
     parser = argparse.ArgumentParser(
         description=(
-            "Solar Monitor — JBD/Vatrer BMS + Victron Instant Readout "
+            "Solar Monitor - JBD/Vatrer BMS + Victron Instant Readout "
             "Bluetooth Dashboard"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -67,11 +67,11 @@ async def main() -> None:
     )
     parser.add_argument(
         "--bms", nargs="+", metavar="MAC",
-        help="Explicit BMS MAC addresses — overrides [bms] section entirely",
+        help="Explicit BMS MAC addresses - overrides [bms] section entirely",
     )
     parser.add_argument(
         "--mppt", nargs="+", metavar="MAC:KEY",
-        help="Explicit Victron MAC:advertisement_key pairs — overrides [victron]",
+        help="Explicit Victron MAC:advertisement_key pairs - overrides [victron]",
     )
     parser.add_argument(
         "--log-level", metavar="LEVEL", default=None,

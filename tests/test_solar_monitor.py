@@ -40,7 +40,9 @@ bleak.BleakScanner = BleakScanner
 sys.modules.update(
     {"bleak": bleak, "bleak.backends": backends, "bleak.backends.device": device_mod}
 )
-sys.path.insert(0, "/home/claude")
+import os
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 from solar_monitor import jbd as jbd_mod
 from solar_monitor import models as m_mod
@@ -786,7 +788,7 @@ class TestVoltagePlausibilityCeilings(unittest.TestCase):
 
     def test_v_ceilings_in_source(self):
         """Per-type ceiling dict must be present in the source."""
-        with open("/home/claude/solar_monitor/victron.py") as f:
+        with open(f"{REPO_ROOT}/solar_monitor/victron.py") as f:
             src = f.read()
         self.assertIn("80.0", src, "80V monitor ceiling must be in source")
         self.assertIn("v_ceiling", src, "v_ceiling variable must be in source")

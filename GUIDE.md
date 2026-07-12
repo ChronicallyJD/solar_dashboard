@@ -1,4 +1,4 @@
-# Solar Monitor — Installation and Operations Guide
+# Solar Monitor: Installation and Operations Guide
 
 A Bluetooth dashboard for JBD/Vatrer BMS battery packs and Victron
 Energy devices (SmartSolar MPPT, MultiPlus-II via VE.Bus Smart Dongle).
@@ -50,9 +50,9 @@ No cloud, no app, no internet connection required.
 ## 2. Installation
 
 ```bash
-# Extract the archive
-tar -xzf solar_monitor.tar.gz
-cd solar_monitor
+# Clone the repository
+git clone https://github.com/ChronicallyJD/solar_dashboard.git
+cd solar_dashboard
 
 # Install Python dependencies
 pip install bleak cryptography
@@ -65,7 +65,7 @@ nano config.ini
 bluetoothctl scan on   # should show nearby BLE devices after a few seconds
 ```
 
-**Permissions** — BlueZ requires either root or membership in the `bluetooth`
+**Permissions**: BlueZ requires either root or membership in the `bluetooth`
 group to open BLE sockets:
 
 ```bash
@@ -122,9 +122,9 @@ One line per JBD/Vatrer pack:
 Label = MAC_ADDRESS [ : password ]
 ```
 
-- **Label** — shown as the card title on the dashboard
-- **MAC** — colon-separated Bluetooth MAC (`A1:B2:C3:D4:E5:F6`)
-- **password** — optional 6-digit BMS password; omit if not set (default factory password is usually `123456`)
+- **Label**: shown as the card title on the dashboard
+- **MAC**: colon-separated Bluetooth MAC (`A1:B2:C3:D4:E5:F6`)
+- **password**: optional 6-digit BMS password; omit if not set (default factory password is usually `123456`)
 
 ```ini
 [bms]
@@ -141,10 +141,10 @@ One line per Victron device:
 Label = MAC : KEY  [ type=mppt|inverter|monitor|dcdc ]
 ```
 
-- **Label** — card title on the dashboard
-- **MAC** — Bluetooth MAC address
-- **KEY** — 32-character advertisement key (see [Victron Device Setup](#8-victron-device-setup))
-- **type** — controls dashboard card and accepted record types (see below)
+- **Label**: card title on the dashboard
+- **MAC**: Bluetooth MAC address
+- **KEY**: 32-character advertisement key (see [Victron Device Setup](#8-victron-device-setup))
+- **type**: controls dashboard card and accepted record types (see below)
 
 | `type=` | Dashboard card | Devices |
 |---|---|---|
@@ -159,7 +159,7 @@ Label = MAC : KEY  [ type=mppt|inverter|monitor|dcdc ]
 
 ### Combined mode (single process)
 
-The simplest way to run — one process polls everything:
+The simplest way to run: one process polls everything.
 
 ```bash
 python jbd_bms_monitor.py --config config.ini
@@ -187,7 +187,7 @@ All three launchers accept the same flags:
 
 ## 5. Split-Process Mode (recommended)
 
-**Run two processes simultaneously** — one for BMS, one for Victron.
+**Run two processes simultaneously**, one for BMS and one for Victron.
 They communicate through a shared JSON state file (`solar_state.json`).
 Either process renders the full dashboard after each of its own polls.
 
@@ -203,12 +203,9 @@ bms_monitor.py          victron_monitor.py
 
 ### Why split?
 
-| Problem (combined mode) | Solution (split mode) |
-|---|---|
-| BMS GATT connection takes 5–35 s per pack | BMS runs independently; Victron doesn't wait |
-| Hung BMS blocks Victron refresh | Each process has its own event loop |
-| Battery SoC changes slowly — no need to poll often | BMS on 2-min interval, Victron on 30-s interval |
-| BMS failure crashes the whole monitor | Processes restart independently |
+Slow or hung BMS GATT connections never block Victron refresh, each
+process polls on the interval its data needs, and a BMS failure
+restarts only the BMS process instead of the whole monitor.
 
 ### Starting split mode
 
@@ -228,8 +225,8 @@ Both processes log independently. The dashboard updates every time
 
 ```ini
 [general]
-bms_interval     = 120   # 2 minutes — battery SoC changes slowly
-victron_interval = 30    # 30 seconds — real-time power monitoring
+bms_interval     = 120   # 2 minutes: battery SoC changes slowly
+victron_interval = 30    # 30 seconds: real-time power monitoring
 scan_timeout     = 10    # BLE scan window per cycle
 ```
 
@@ -273,7 +270,7 @@ failure, and logs to journald.
 
 ```ini
 [Unit]
-Description=Solar Monitor — Victron (MPPT + Inverter)
+Description=Solar Monitor: Victron (MPPT + Inverter)
 After=network.target bluetooth.target
 Wants=bluetooth.target
 
@@ -295,7 +292,7 @@ WantedBy=multi-user.target
 
 ```ini
 [Unit]
-Description=Solar Monitor — BMS (JBD/Vatrer)
+Description=Solar Monitor: BMS (JBD/Vatrer)
 After=network.target bluetooth.target
 Wants=bluetooth.target
 
@@ -351,7 +348,7 @@ output = /var/www/html/solar.html
 
 Then browse to `http://your-pi-ip/solar.html`.
 
-### cron (alternative — one-shot polling)
+### cron (alternative: one-shot polling)
 
 If you prefer cron over a long-running daemon:
 
@@ -368,7 +365,7 @@ If you prefer cron over a long-running daemon:
 ## 7. Dashboard
 
 The dashboard is a single HTML file that opens in any browser. It
-updates in-place — refresh the page to see new readings.
+updates in-place; refresh the page to see new readings.
 
 ### Themes
 
@@ -386,23 +383,23 @@ theme = business
 ### BMS card
 
 Displays per battery pack:
-- **Volts / Amps / Watts** — pack voltage, signed current (−=discharge, +=charge), DC power
-- **SoC bar** — colour-coded (green → yellow → red as charge drops)
-- **Remaining Wh** — energy remaining at current voltage
-- **Ah remaining / total** — e.g. `84.0 / 100.0 Ah`
-- **TTE** — time to empty at current discharge rate (e.g. `TTE 5h36m`)
-- **TTF** — time to full at current charge rate (e.g. `TTF 1h12m`)
-- **Cell count · Cycle count · FET status** — `16 cells · 8 cycles · CHG ✓ DSG ✓`
-- **Temperatures** — all NTC sensor readings
-- **Faults** — active protection faults in red (e.g. `⚠ Cell overvoltage`)
-- **Balancing** — cells currently being balanced (e.g. `⚡ Balancing cells: 4, 7`)
+- **Volts / Amps / Watts**: pack voltage, signed current (−=discharge, +=charge), DC power
+- **SoC bar**: colour-coded (green → yellow → red as charge drops)
+- **Remaining Wh**: energy remaining at current voltage
+- **Ah remaining / total**: e.g. `84.0 / 100.0 Ah`
+- **TTE**: time to empty at current discharge rate (e.g. `TTE 5h36m`)
+- **TTF**: time to full at current charge rate (e.g. `TTF 1h12m`)
+- **Cell count · Cycle count · FET status**: `16 cells · 8 cycles · CHG ✓ DSG ✓`
+- **Temperatures**: all NTC sensor readings
+- **Faults**: active protection faults in red (e.g. `⚠ Cell overvoltage`)
+- **Balancing**: cells currently being balanced (e.g. `⚡ Balancing cells: 4, 7`)
 
 ### Victron inverter card (VE.Bus Smart Dongle)
 
 Matches the layout shown in VictronConnect:
 
 **AC Output L1**
-- Voltage (V): `120` (hardcoded — not transmitted in BLE record)
+- Voltage (V): `120` (hardcoded; not transmitted in BLE record)
 - Power (W): real AC output watts from dongle
 - Current (A): computed as Power ÷ 120V
 
@@ -423,9 +420,9 @@ Matches the layout shown in VictronConnect:
 ### System totals banner
 
 Spans the full width:
-- **Battery Power** — sum of BMS pack power only (no double-counting from inverter)
-- **PV Power** — sum of MPPT solar input
-- **Yield Today** — total energy harvested across all MPPTs
+- **Battery Power**: sum of BMS pack power only (no double-counting from inverter)
+- **PV Power**: sum of MPPT solar input
+- **Yield Today**: total energy harvested across all MPPTs
 
 ---
 
@@ -459,7 +456,7 @@ MultiPlus   = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverte
 ### VE.Bus Smart Dongle (MultiPlus-II)
 
 The dongle appears as a **separate device** from the inverter's built-in
-Bluetooth. In VictronConnect it is listed under its own entry — usually
+Bluetooth. In VictronConnect it is listed under its own entry, usually
 named after the inverter system (e.g. `48V-2400W`).
 
 The dongle broadcasts record type `0x07` with the full VE.Bus data set:
@@ -480,7 +477,7 @@ Product Info → Firmware → Check for updates.
 # Start a BLE scan
 bluetoothctl
 [bluetooth]# scan on
-# Wait 10-20 seconds — BMS devices typically advertise as "BT-TH-XXXXXXXX" or similar
+# Wait 10-20 seconds; BMS devices typically advertise as "BT-TH-XXXXXXXX" or similar
 [bluetooth]# scan off
 [bluetooth]# exit
 ```
@@ -531,7 +528,7 @@ python bms_monitor.py    --config config.ini --once --log-level DEBUG
 ```
 
 Common causes:
-- Device not in BLE range — move closer
+- Device not in BLE range (move closer)
 - Wrong MAC address in `config.ini`
 - Wrong or missing advertisement key (Victron)
 - Instant Readout not enabled in VictronConnect
@@ -552,7 +549,7 @@ Info → Instant Readout via Bluetooth → enable the toggle.
 ### BMS: `TIMEOUT (35s)` on every cycle
 
 - BMS is out of BLE range
-- Another device (phone app) has an open GATT connection — close it
+- Another device (phone app) has an open GATT connection; close it
 - BMS firmware bug: try power-cycling the BMS
 - BlueZ interference: `sudo hciconfig hci0 reset` then restart the monitor
 
@@ -594,81 +591,9 @@ attempt.
 
 ## 11. Configuration Reference
 
-### Complete annotated config.ini
-
-```ini
-# ─── solar_monitor/config.ini ────────────────────────────────────────────────
-
-[general]
-
-# Path where the HTML dashboard is written.
-output = /var/www/html/solar.html
-
-# Shared state file used when running bms_monitor.py and victron_monitor.py
-# as separate processes. Both processes read and write to this file.
-# Default: solar_state.json (in the working directory)
-state_file = solar_state.json
-
-# ── Poll intervals ────────────────────────────────────────────────────────────
-
-# BMS poll interval in seconds (bms_monitor.py).
-# BMS GATT connections are slow; 120s is a good balance between freshness
-# and reliability. Minimum enforced by the process: 30s.
-bms_interval = 120
-
-# Victron poll interval in seconds (victron_monitor.py).
-# BLE advertisement scanning is fast and passive. 30s gives real-time
-# power monitoring. Minimum enforced by the process: 10s.
-victron_interval = 30
-
-# Legacy combined-mode interval (jbd_bms_monitor.py).
-# Used when running a single process for everything.
-interval = 30
-
-# ── Scanner settings ──────────────────────────────────────────────────────────
-
-# How long to scan for BLE devices each cycle (seconds).
-# Must be long enough to receive multiple advertisement packets from each
-# Victron device (each device cycles through record types). 10s is reliable
-# for 1-5 devices; increase to 15s if devices are frequently missed.
-scan_timeout = 10
-
-# How many history data-points to retain per device for the dashboard charts.
-# At 30s interval, 600 points = 5 hours of history.
-max_history = 600
-
-# ── Display ───────────────────────────────────────────────────────────────────
-
-# Console log verbosity: DEBUG, INFO, WARNING, ERROR
-log_level = INFO
-
-# Dashboard colour theme: dark, light, business
-theme = business
-
-# ─── JBD / Vatrer BMS packs ──────────────────────────────────────────────────
-
-[bms]
-# Format: Label = MAC [ : password ]
-# Leave this section empty or absent to skip BMS polling.
-
-House Bank = A1:B2:C3:D4:E5:F6 : 123456
-# Spare Pack = A1:B2:C3:D4:E5:F7
-
-# ─── Victron BLE devices ─────────────────────────────────────────────────────
-
-[victron]
-# Format: Label = MAC : KEY  [ type=mppt|inverter|monitor|dcdc ]
-# Advertisement Key from VictronConnect → gear → Product Info → Instant Readout.
-# Leave this section empty or absent to skip Victron polling.
-
-# SmartSolar MPPTs:
-South Array = 11:22:33:44:55:01 : aabbccddeeff00112233445566778899  type=mppt
-West Array  = 11:22:33:44:55:02 : 00112233445566778899aabbccddeeff  type=mppt
-
-# VE.Bus Smart Dongle (MultiPlus-II 48/5000/70-95 120V):
-# Provides battery V/A/temp, SoC, AC-in source/power, AC-out real watts.
-MultiPlus = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverter
-```
+The complete annotated config example and per-key reference live in
+[CONFIG.md](CONFIG.md). It covers every key in `[general]`, `[bms]`,
+`[victron]`, `[server]`, `[history]`, and `[mcp]`.
 
 ### Timing reference
 
@@ -684,11 +609,12 @@ MultiPlus = C0:FF:EE:12:34:56 : 0123456789abcdef0123456789abcdef  type=inverter
 
 ### Running the test suite
 
+Run the test suite with pytest from the repo root:
+
 ```bash
-cd solar_monitor
-python3 -m unittest discover -s tests -v
+python3 -m pytest tests/ -q
 ```
 
-203 tests covering BMS protocol parsing, Victron BLE decryption, state
-file atomicity, split-process isolation, config loading, and dashboard
+Tests cover BMS protocol parsing, Victron BLE decryption, state file
+atomicity, split-process isolation, config loading, and dashboard
 rendering. All tests run without BLE hardware.

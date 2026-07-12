@@ -1,5 +1,5 @@
 """
-solar_monitor/config.py — Configuration loading and CLI parsing
+solar_monitor/config.py - Configuration loading and CLI parsing
 ===============================================================
 Handles INI file reading, CLI argument parsing, and the two dataclasses
 (AppConfig, DeviceConfig) that carry runtime configuration throughout the
@@ -22,8 +22,8 @@ Vatrer Pack   = SP16S020L16S100A
 
 [victron]                     # also accepts [mppt]
 # Friendly Name = MAC : 32-hex-advertisement-key
-Roof MPPT     = E1:2D:6C:B5:83:76 : 2bbad134f666e8f1f23e510584af3450
-Inverter      = E6:2E:31:75:9A:1A : dd15693279172720da3ecb1d2e4e7da1
+Roof MPPT     = AA:BB:CC:DD:EE:F1 : 00112233445566778899aabbccddeeff
+Inverter      = AA:BB:CC:DD:EE:F2 : 112233445566778899aabbccddeeff00
 """
 
 import argparse
@@ -104,15 +104,15 @@ theme           = dark
 #   With spaces: Name = AA:BB:CC:DD:EE:FF : aabbccddeeff00112233445566778899
 #
 # Full examples:
-#   (1)-14-130V  = DD:1B:7E:A7:91:83:613f9fd95d3633385cf49d32a9d551e3 type=mppt
-#   (3)-12-180V  = E1:2D:6C:B5:83:76:2bbad134f666e8f1f23e510584af3450 type=mppt
-#   48V-2400W    = E6:2E:31:75:9A:1A:dd15693279172720da3ecb1d2e4e7da1 type=inverter
+#   Example-MPPT-1  = AA:BB:CC:DD:EE:F3:2233445566778899aabbccddeeff0011 type=mppt
+#   Example-MPPT-2  = AA:BB:CC:DD:EE:F1:00112233445566778899aabbccddeeff type=mppt
+#   Example-Inverter    = AA:BB:CC:DD:EE:F2:112233445566778899aabbccddeeff00 type=inverter
 #
 # If this section is absent the script auto-discovers Victron devices.
 
 [victron]
-# (1)-14-130V  = DD:1B:7E:A7:91:83:613f9fd95d3633385cf49d32a9d551e3 type=mppt
-# 48V-2400W    = E6:2E:31:75:9A:1A:dd15693279172720da3ecb1d2e4e7da1 type=inverter
+# Example-MPPT-1  = AA:BB:CC:DD:EE:F3:2233445566778899aabbccddeeff0011 type=mppt
+# Example-Inverter    = AA:BB:CC:DD:EE:F2:112233445566778899aabbccddeeff00 type=inverter
 """
 
 
@@ -344,7 +344,7 @@ def apply_cli_overrides(cfg: AppConfig, args: argparse.Namespace) -> AppConfig:
     Merge parsed CLI arguments on top of an existing AppConfig.
 
     Uses ``getattr(args, key, None)`` throughout so this function works with
-    any argparse Namespace — the split-process launchers (bms_monitor.py,
+    any argparse Namespace - the split-process launchers (bms_monitor.py,
     victron_monitor.py) define a subset of flags and must not crash when the
     combined-launcher flags (--bms, --mppt) are absent.
 

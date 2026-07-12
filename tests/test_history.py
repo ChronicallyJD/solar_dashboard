@@ -51,7 +51,9 @@ sys.modules.update({
     "bleak.backends": backends,
     "bleak.backends.device": dev_m,
 })
-sys.path.insert(0, "/home/claude")
+import os
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 from solar_monitor.history import (
     HistoryDB, HistoryConfig, load_history_config,
@@ -711,7 +713,7 @@ class TestHistoryDBFileManagement(unittest.TestCase):
 class TestHistorySourceGuarantees(unittest.TestCase):
 
     def _src(self) -> str:
-        with open("/home/claude/solar_monitor/history.py") as f:
+        with open(f"{REPO_ROOT}/solar_monitor/history.py") as f:
             return f.read()
 
     def test_wal_mode_pragma(self):
@@ -749,7 +751,7 @@ class TestHistorySourceGuarantees(unittest.TestCase):
 class TestUtilsSourceGuarantees(unittest.TestCase):
 
     def _src(self, filename: str) -> str:
-        with open(f"/home/claude/utils/{filename}") as f:
+        with open(f"{REPO_ROOT}/utils/{filename}") as f:
             return f.read()
 
     def test_purge_utility_has_dry_run(self):

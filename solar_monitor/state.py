@@ -1,5 +1,5 @@
 """
-solar_monitor/state.py — Shared inter-process state via JSON file
+solar_monitor/state.py - Shared inter-process state via JSON file
 =================================================================
 Both the BMS monitor and the Victron monitor write their latest readings
 to a shared JSON file.  The dashboard writer reads both sections and
@@ -26,6 +26,7 @@ from seeing a partial file.
 import json
 import logging
 import os
+import tempfile
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -35,7 +36,7 @@ from .models import DeviceReading
 
 log = logging.getLogger(__name__)
 
-# Keys that hold list values in DeviceReading — must not be coerced to None
+# Keys that hold list values in DeviceReading - must not be coerced to None
 _LIST_FIELDS = {"temp_c", "faults", "balance_cells"}
 
 
@@ -63,7 +64,7 @@ def load_state(state_path: str) -> dict:
         {"updated": ISO-timestamp-or-None, "readings": [DeviceReading, ...]}
 
     Returns empty dicts for missing sections.  Never raises on a missing or
-    corrupt file — returns an empty state instead.
+    corrupt file - returns an empty state instead.
     """
     empty = {
         "bms":     {"updated": None, "readings": []},
@@ -99,7 +100,7 @@ def save_section(state_path: str, section: str, readings: list[DeviceReading]) -
     Atomically update one section ("bms" or "victron") of the shared state file.
 
     Reads the existing file, updates only the named section, writes to a
-    temporary file, then renames — so the reader always sees a complete file.
+    temporary file, then renames - so the reader always sees a complete file.
     """
     assert section in ("bms", "victron"), f"Invalid section: {section!r}"
 
@@ -115,10 +116,19 @@ def save_section(state_path: str, section: str, readings: list[DeviceReading]) -
         "readings": [_reading_to_dict(r) for r in readings],
     }
 
-    # Atomic write: temp file → rename
-    tmp = state_path + ".tmp"
+    # Atomic write: unique temp file in the same directory, then rename.
+    # A unique name (O_EXCL via mkstemp) means concurrent workers cannot
+    # clobber each other's temp file, and a pre-planted symlink at a
+    # predictable path cannot redirect the write.
+    dest = Path(state_path)
+    tmp = ""
     try:
-        Path(tmp).write_text(json.dumps(raw, default=str), encoding="utf-8")
+        fd, tmp = tempfile.mkstemp(
+            prefix=dest.name + ".", suffix=".tmp", dir=str(dest.parent) or "."
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(raw, default=str))
+        os.chmod(tmp, 0o644)   # mkstemp creates 0600; match a normal write
         os.replace(tmp, state_path)
     except OSError as exc:
         log.error(f"Failed to write state file {state_path}: {exc}")

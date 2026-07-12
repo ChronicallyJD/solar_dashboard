@@ -51,7 +51,9 @@ sys.modules.update({
     "bleak.backends": backends,
     "bleak.backends.device": dev_m,
 })
-sys.path.insert(0, "/home/claude")
+import os
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 from solar_monitor.server import (
     ServerConfig, build_ssl_context, generate_self_signed_cert,
@@ -543,7 +545,7 @@ class TestSupervisorServerIntegration(unittest.TestCase):
     """Verify supervisor starts / skips the HTTPS server based on config."""
 
     def _src(self) -> str:
-        with open("/home/claude/solar_monitor.py") as f:
+        with open(f"{REPO_ROOT}/solar_monitor.py") as f:
             return f.read()
 
     def test_server_enabled_check_in_supervisor(self):
@@ -656,7 +658,7 @@ class TestRunHttpsServer(unittest.TestCase):
 class TestServerSourceGuarantees(unittest.TestCase):
 
     def _src(self) -> str:
-        with open("/home/claude/solar_monitor/server.py") as f:
+        with open(f"{REPO_ROOT}/solar_monitor/server.py") as f:
             return f.read()
 
     def test_tls_1_2_minimum_enforced(self):

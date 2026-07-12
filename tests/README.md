@@ -1,2 +1,5 @@
-cd ~/repos/Solar_monitor
-python3 -m unittest discover -s tests -v
+# Tests
+
+Run the suite from the repo root:
+
+    python3 -m pytest tests/ -q

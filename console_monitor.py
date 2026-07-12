@@ -1,5 +1,5 @@
 """
-console_monitor.py — Rich live console dashboard
+console_monitor.py - Rich live console dashboard
 ==================================================
 Displays the same data as the HTML dashboard, but rendered directly in the
 terminal using the Rich library.  Polls the shared state file and re-renders
@@ -9,7 +9,7 @@ Usage
 -----
     python console_monitor.py [--config FILE] [--state-file FILE] [--interval SECS]
 
-The console monitor is read-only — it never writes to the state file.
+The console monitor is read-only - it never writes to the state file.
 It can run alongside the supervisor, or standalone when you want a live
 terminal view without opening a browser.
 
@@ -60,7 +60,7 @@ from solar_monitor.state import load_state
 from solar_monitor.models import DeviceReading
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Colour palette — mapped to Rich style strings
+# Colour palette - mapped to Rich style strings
 # ─────────────────────────────────────────────────────────────────────────────
 
 C_VOLT    = "bright_cyan"
@@ -460,7 +460,7 @@ def _mtime(path: str) -> float:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Solar Monitor — live Rich console dashboard",
+        description="Solar Monitor - live Rich console dashboard",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -493,7 +493,7 @@ def main() -> None:
     interval = max(0.5, args.interval)
 
     console.print(
-        f"\n[bold bright_cyan]Solar Monitor[/] — console dashboard\n"
+        f"\n[bold bright_cyan]Solar Monitor[/] - console dashboard\n"
         f"[bright_black]Watching:[/] {state_path}\n"
         f"[bright_black]Interval:[/] {interval}s    "
         f"[bright_black]Press Ctrl-C to exit[/]\n"
@@ -509,7 +509,7 @@ def main() -> None:
         _render(state),
         console=console,
         refresh_per_second=4,
-        screen=True,           # full-screen mode — clears on exit
+        screen=True,           # full-screen mode - clears on exit
     ) as live:
         try:
             while True:

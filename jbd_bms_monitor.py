@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-jbd_bms_monitor.py — backward-compatible launcher
+jbd_bms_monitor.py - backward-compatible launcher
 ===================================================
 This file exists for backward compatibility.  The application has been
 refactored into the solar_monitor package.

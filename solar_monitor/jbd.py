@@ -1,5 +1,5 @@
 """
-solar_monitor/jbd.py — JBD / Vatrer BMS GATT protocol
+solar_monitor/jbd.py - JBD / Vatrer BMS GATT protocol
 ======================================================
 Handles everything needed to connect to a JBD-compatible BMS over BLE GATT
 and retrieve a "basic info" reading containing pack voltage, current, state
@@ -16,8 +16,8 @@ Protocol summary
 ----------------
 Communication is over GATT:
   Service ff00  (or ffe0 / Nordic UART on some firmware)
-  TX char ff01  — BMS sends responses; host subscribes with notify
-  RX char ff02  — host sends commands; write with or without response
+  TX char ff01  - BMS sends responses; host subscribes with notify
+  RX char ff02  - host sends commands; write with or without response
 
 The command to request basic info (register 0x03):
   DD A5 03 00 FF FD 77
@@ -38,22 +38,22 @@ Fault-tolerance design
 ----------------------
 BlueZ on Linux is finicky. Common failure modes and their mitigations:
 
-1. **Device connects but never sends notify** — wrapped in asyncio.wait_for
+1. **Device connects but never sends notify** - wrapped in asyncio.wait_for
    with PER_DEVICE_TIMEOUT covering the full operation (connect + settle +
    read), not just the read phase.
 
-2. **Corrupt length byte in received packet** — _packet_complete() returns
+2. **Corrupt length byte in received packet** - _packet_complete() returns
    False for n > MAX_PAYLOAD_LEN; _on_notify() detects this, clears the
    buffer, and resets the event so _send_recv does not wait forever.
 
-3. **Spurious notify bytes before command** — _send_recv() clears buffer and
+3. **Spurious notify bytes before command** - _send_recv() clears buffer and
    event before writing the command, discarding any pre-existing bytes.
    _on_notify() also strips leading non-0xDD bytes on every callback.
 
-4. **BlueZ "removed from BlueZ" / "not found"** — the PersistentScanner
+4. **BlueZ "removed from BlueZ" / "not found"** - the PersistentScanner
    keeps the radio on throughout polling, keeping device references alive.
 
-5. **Permanent errors (bad password, no GATT service)** — detected by
+5. **Permanent errors (bad password, no GATT service)** - detected by
    keyword matching and not retried, saving time for real transient errors.
 """
 
@@ -73,7 +73,7 @@ log = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# GATT UUID candidates — tried in order; first match wins.
+# GATT UUID candidates - tried in order; first match wins.
 JBD_UUID_CANDIDATES: list[dict] = [
     {   # Standard JBD / Xiaoxiang (most common)
         "service": "0000ff00-0000-1000-8000-00805f9b34fb",
@@ -119,7 +119,7 @@ NOTIFY_SETTLE_DELAY = 1.0
 # causing an indefinite wait for bytes that will never arrive.
 MAX_PAYLOAD_LEN = 128
 
-# Error message substrings that indicate a permanent failure — not retried.
+# Error message substrings that indicate a permanent failure - not retried.
 PERMANENT_ERRORS: tuple[str, ...] = (
     "rejected password",
     "no compatible jbd service",
@@ -183,7 +183,7 @@ def _packet_complete(buf: bytearray) -> bool:
         return False
     n = buf[3]
     if n > MAX_PAYLOAD_LEN:
-        return False     # corrupt length byte — caller must reset buffer
+        return False     # corrupt length byte - caller must reset buffer
     return len(buf) >= n + 7
 
 
@@ -241,9 +241,9 @@ def _parse_basic_info(data: bytes) -> dict:
             f"0x{data[n+6]:02X} (expected 0x77)  raw={data.hex()}"
         )
     if not _verify_checksum(data):
-        # Warn rather than raise — some BMS firmware has checksum quirks
+        # Warn rather than raise - some BMS firmware has checksum quirks
         log.warning(
-            f"    BMS checksum mismatch — data may be corrupt  raw={data.hex()}"
+            f"    BMS checksum mismatch - data may be corrupt  raw={data.hex()}"
         )
 
     payload = data[4: 4 + n]
@@ -355,7 +355,7 @@ async def _discover_chars(client: BleakClient) -> tuple[str, str]:
     making connection issues immediately visible in the log.
 
     Returns:
-        (tx_uuid, rx_uuid) — TX notifies (BMS→host), RX accepts writes.
+        (tx_uuid, rx_uuid) - TX notifies (BMS→host), RX accepts writes.
     Raises:
         ValueError if no compatible service is found.
     """
@@ -377,7 +377,7 @@ async def _discover_chars(client: BleakClient) -> tuple[str, str]:
                 log.info(f"    JBD service matched: {svc.uuid}  TX={tx}  RX={rx}")
                 return tx, rx
 
-    # Heuristic fallback — any service with notify + write
+    # Heuristic fallback - any service with notify + write
     for svc in svcs:
         notifiers = [c for c in svc.characteristics if "notify"       in c.properties]
         writers   = [c for c in svc.characteristics if "write"        in c.properties
@@ -385,7 +385,7 @@ async def _discover_chars(client: BleakClient) -> tuple[str, str]:
         if notifiers and writers:
             tx, rx = notifiers[0].uuid, writers[0].uuid
             log.warning(
-                f"    No known JBD UUID matched — using heuristic "
+                f"    No known JBD UUID matched - using heuristic "
                 f"TX={tx}  RX={rx}"
             )
             return tx, rx
@@ -396,7 +396,7 @@ async def _discover_chars(client: BleakClient) -> tuple[str, str]:
         for c in svc.characteristics:
             log.warning(f"      svc={svc.uuid}  char={c.uuid}  {c.properties}")
     raise ValueError(
-        "No compatible JBD GATT service found — check device firmware or UUID list"
+        "No compatible JBD GATT service found - check device firmware or UUID list"
     )
 
 
@@ -438,14 +438,14 @@ class JBDGattReader:
 
     def _on_notify(self, _sender, data: bytearray) -> None:
         """
-        BLE notification callback — accumulate bytes and signal on completion.
+        BLE notification callback - accumulate bytes and signal on completion.
 
         Resync logic:
         - Strips any leading bytes that are not 0xDD (the JBD start marker).
           This discards partial packets and stale bytes from previous reads.
         - If the accumulated buffer has a corrupt length byte (> MAX_PAYLOAD_LEN),
           the buffer is cleared immediately rather than waiting indefinitely.
-          The event is NOT set in this case — the caller times out cleanly and
+          The event is NOT set in this case - the caller times out cleanly and
           retries on the next attempt.
         """
         self._buf.extend(data)
@@ -458,7 +458,7 @@ class JBDGattReader:
         if len(self._buf) >= 4 and self._buf[3] > MAX_PAYLOAD_LEN:
             log.warning(
                 f"    Corrupt BMS frame: length byte={self._buf[3]} "
-                f"(max {MAX_PAYLOAD_LEN}) — clearing buffer"
+                f"(max {MAX_PAYLOAD_LEN}) - clearing buffer"
             )
             self._buf.clear()
             return
@@ -508,7 +508,7 @@ class JBDGattReader:
             await asyncio.wait_for(self._event.wait(), timeout=READ_TIMEOUT)
         except asyncio.TimeoutError:
             raise asyncio.TimeoutError(
-                f"No BMS response within {READ_TIMEOUT}s after command — "
+                f"No BMS response within {READ_TIMEOUT}s after command - "
                 f"buffer has {len(self._buf)}B: "
                 f"{self._buf.hex()[:64] or '(empty)'}"
             )
@@ -522,7 +522,7 @@ class JBDGattReader:
 
         The BMS responds with a short frame whose status byte indicates
         success (0x00) or failure (0x80).  A rejected password raises
-        ValueError immediately — there is no point retrying with the
+        ValueError immediately - there is no point retrying with the
         same wrong password.
         """
         pw_bytes = password.encode("ascii")
@@ -535,7 +535,7 @@ class JBDGattReader:
             )
         if reply[2] == 0x80:
             raise ValueError(
-                "BMS rejected password — update the password in your config"
+                "BMS rejected password - update the password in your config"
             )
         log.debug("    BMS authentication accepted")
 
@@ -547,7 +547,7 @@ class JBDGattReader:
           1. GATT service / characteristic discovery
           2. Subscribe to TX notifications
           3. Wait NOTIFY_SETTLE_DELAY seconds for BlueZ to register the
-             subscription on the remote device (required — without it the
+             subscription on the remote device (required - without it the
              first notify arrives before the kernel handler is active)
           4. If password set: send authentication command
           5. Send basic-info request, reassemble multi-chunk response
@@ -558,8 +558,8 @@ class JBDGattReader:
         Returns:
             Complete raw packet bytes ready for _parse_basic_info().
         Raises:
-            asyncio.TimeoutError  — no response within READ_TIMEOUT.
-            ValueError            — auth failure, GATT service missing, etc.
+            asyncio.TimeoutError  - no response within READ_TIMEOUT.
+            ValueError            - auth failure, GATT service missing, etc.
         """
         self._tx_uuid, self._rx_uuid = await _discover_chars(self._client)
         await self._client.start_notify(self._tx_uuid, self._on_notify)
@@ -591,7 +591,7 @@ async def read_jbd_device(
     *device* may be a ``BLEDevice`` (from a scan) or a plain MAC address
     string (e.g. ``"AA:BB:CC:DD:EE:FF"``).  When a MAC string is given,
     ``BleakClient`` passes it straight to BlueZ which constructs the D-Bus
-    path itself — this avoids the ``KeyError: 'path'`` that occurs when
+    path itself - this avoids the ``KeyError: 'path'`` that occurs when
     a synthetic ``BLEDevice`` with an empty ``details`` dict is used.
 
     The entire operation (connect + settle + read) is wrapped in a
@@ -621,7 +621,7 @@ async def read_jbd_device(
         async with asyncio.timeout(PER_DEVICE_TIMEOUT):
             # Pass address string directly so BlueZ builds the D-Bus path itself.
             # This is the safe path when no prior scan has registered the device
-            # with BlueZ — a synthetic BLEDevice with details={} would raise
+            # with BlueZ - a synthetic BLEDevice with details={} would raise
             # KeyError('path') inside bleak's BlueZ backend.
             async with BleakClient(address, timeout=15) as client:
                 raw    = await JBDGattReader(client).read_basic_info(
@@ -639,11 +639,11 @@ async def read_jbd_device(
         )
     except asyncio.TimeoutError:
         r.error = (
-            f"Timed out after {PER_DEVICE_TIMEOUT}s — "
+            f"Timed out after {PER_DEVICE_TIMEOUT}s - "
             "device connected but did not respond"
         )
         log.warning(f"  [BMS]  {name}: TIMEOUT ({PER_DEVICE_TIMEOUT}s)")
     except Exception as exc:
         r.error = str(exc)
-        log.warning(f"  [BMS]  {name}: ERROR — {exc}")
+        log.warning(f"  [BMS]  {name}: ERROR - {exc}")
     return r

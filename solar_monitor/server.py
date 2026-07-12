@@ -1,5 +1,5 @@
 """
-solar_monitor/server.py — Async HTTPS dashboard server
+solar_monitor/server.py - Async HTTPS dashboard server
 =======================================================
 Serves the dashboard HTML and raw state JSON over HTTPS using Python's
 built-in asyncio + ssl.  No extra dependencies beyond what the rest of
@@ -8,7 +8,7 @@ the project already requires.
 Design
 ------
 - Runs as an asyncio Task inside the supervisor alongside worker processes
-  and the dashboard writer — no separate process needed.
+  and the dashboard writer - no separate process needed.
 - Uses ssl.SSLContext wrapping asyncio.start_server for TLS.
 - Auto-generates a self-signed certificate on first run when no cert/key
   is provided (requires the 'cryptography' package, already a dependency).
@@ -161,8 +161,21 @@ def generate_self_signed_cert(
             critical=False,
         )
         .add_extension(
-            x509.BasicConstraints(ca=True, path_length=None),
+            x509.BasicConstraints(ca=False, path_length=None),
             critical=True,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True, key_encipherment=True,
+                content_commitment=False, data_encipherment=False,
+                key_agreement=False, key_cert_sign=False, crl_sign=False,
+                encipher_only=False, decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
         )
         .sign(key, hashes.SHA256())
     )
@@ -173,15 +186,21 @@ def generate_self_signed_cert(
         format=serialization.PrivateFormat.TraditionalOpenSSL,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    Path(key_path).write_bytes(key_pem)
-    os.chmod(key_path, 0o600)   # private key — owner-read only
+    # Create the key file with 0600 from the start so it is never readable
+    # by other users, even briefly or after a crash mid-write.
+    fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, key_pem)
+    finally:
+        os.close(fd)
+    os.chmod(key_path, 0o600)   # in case the file pre-existed with wider mode
 
     # Write certificate (PEM)
     cert_pem = cert.public_bytes(serialization.Encoding.PEM)
     Path(cert_path).write_bytes(cert_pem)
 
     log.info(
-        f"Self-signed certificate generated — valid for {days} days.  "
+        f"Self-signed certificate generated - valid for {days} days.  "
         f"Add {cert_path} to your browser/OS trust store to avoid "
         f"the 'not trusted' warning."
     )
@@ -223,7 +242,7 @@ def build_ssl_context(cfg: ServerConfig) -> ssl.SSLContext:
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(certfile=cfg.cert_file, keyfile=cfg.key_file)
     log.info(
-        f"SSL context loaded — cert: {cfg.cert_file}  key: {cfg.key_file}"
+        f"SSL context loaded - cert: {cfg.cert_file}  key: {cfg.key_file}"
     )
     return ctx
 
@@ -271,7 +290,18 @@ async def _handle_request(
     the connection is always closed.
     """
     try:
-        request_line = await asyncio.wait_for(reader.readline(), timeout=10.0)
+        async def _read_request():
+            request_line = await reader.readline()
+            # Consume remaining headers (we don't use them).  Cap the count so
+            # a client cannot hold the connection open by dripping headers.
+            for _ in range(100):
+                line = await reader.readline()
+                if line in (b"\r\n", b"\n", b""):
+                    break
+            return request_line
+
+        # One deadline for the whole request, not per line.
+        request_line = await asyncio.wait_for(_read_request(), timeout=15.0)
         request      = request_line.decode(errors="replace").strip()
         parts        = request.split()
         if len(parts) < 2:
@@ -279,12 +309,6 @@ async def _handle_request(
             return
 
         method, path = parts[0], parts[1]
-
-        # Consume remaining headers (we don't use them)
-        while True:
-            line = await asyncio.wait_for(reader.readline(), timeout=5.0)
-            if line in (b"\r\n", b"\n", b""):
-                break
 
         log.debug(f"HTTPS {method} {path}")
 
@@ -323,7 +347,7 @@ async def _handle_request(
             writer.write(_HTTP_404.encode())
 
     except (asyncio.TimeoutError, ConnectionResetError, BrokenPipeError):
-        pass   # client disconnected — not an error
+        pass   # client disconnected - not an error
     except Exception as exc:
         log.debug(f"HTTPS handler error: {exc}")
         try:

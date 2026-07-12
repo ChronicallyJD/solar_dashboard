@@ -52,11 +52,13 @@ sys.modules.update({
     "bleak.backends": backends,
     "bleak.backends.device": dev_m,
 })
-sys.path.insert(0, "/home/claude")
+import os
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 import importlib.util, sys as _sys
 _spec = importlib.util.spec_from_file_location(
-    "supervisor_module", "/home/claude/solar_monitor.py"
+    "supervisor_module", f"{REPO_ROOT}/solar_monitor.py"
 )
 sup_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sup_mod)
@@ -613,7 +615,7 @@ class TestWorkerStateFlagAccepted(unittest.TestCase):
     """
 
     def _src(self, filename):
-        with open(f"/home/claude/{filename}") as fh:
+        with open(f"{REPO_ROOT}/{filename}") as fh:
             return fh.read()
 
     def test_bms_monitor_accepts_state_file_arg(self):
@@ -644,7 +646,7 @@ class TestWorkerStateFlagAccepted(unittest.TestCase):
 class TestSupervisorSourceGuarantees(unittest.TestCase):
 
     def _src(self):
-        with open("/home/claude/solar_monitor.py") as fh:
+        with open(f"{REPO_ROOT}/solar_monitor.py") as fh:
             return fh.read()
 
     def test_worker_registry_defined(self):

@@ -47,7 +47,9 @@ sys.modules.update({
     "bleak.backends": backends,
     "bleak.backends.device": device_mod,
 })
-sys.path.insert(0, "/home/claude")
+import os
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 from solar_monitor.models import DeviceReading
 from solar_monitor.state import (
@@ -103,7 +105,7 @@ def _bms_reading(**kwargs) -> DeviceReading:
 
 def _victron_reading(**kwargs) -> DeviceReading:
     defaults = dict(
-        address="E6:2E:31:75:9A:1A", name="Multiplus-Ii",
+        address="AA:BB:CC:DD:EE:F2", name="Multiplus-Ii",
         device_type="inverter", timestamp="2024-01-01T12:00:00",
         voltage_v=54.0, current_a=-15.0, power_w=-810.0,
         ac_out_power_va=755.0, ac_in_power_w=0.0,
@@ -718,9 +720,9 @@ class TestPollVictronMocked(unittest.TestCase):
     def test_missing_device_returns_error_reading(self):
         from solar_monitor.scanner import _poll_victron, VictronScanner
         from solar_monitor.config import DeviceConfig
-        dc = DeviceConfig(name="Multiplus-Ii", mac="E6:2E:31:75:9A:1A",
+        dc = DeviceConfig(name="Multiplus-Ii", mac="AA:BB:CC:DD:EE:F2",
                           ble_name=None, enc_key=None, password=None)
-        scanner = VictronScanner(["E6:2E:31:75:9A:1A"])
+        scanner = VictronScanner(["AA:BB:CC:DD:EE:F2"])
         # Scanner has no data — device was not seen
         results = _poll_victron([dc], scanner)
         self.assertEqual(len(results), 1)
@@ -1027,7 +1029,7 @@ class TestResolveDate(unittest.TestCase):
     def setUp(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            "query_history", "/home/claude/utils/query_history.py"
+            "query_history", f"{REPO_ROOT}/utils/query_history.py"
         )
         self.qh = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.qh)
@@ -1065,7 +1067,7 @@ class TestPrintTable(unittest.TestCase):
     def setUp(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            "query_history", "/home/claude/utils/query_history.py"
+            "query_history", f"{REPO_ROOT}/utils/query_history.py"
         )
         self.qh = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.qh)
@@ -1117,7 +1119,7 @@ class TestOrPatternImport(unittest.TestCase):
     """scan() must attempt the OrPattern import path for bleak >= 0.21."""
 
     def _scanner_src(self):
-        with open("/home/claude/solar_monitor/scanner.py") as f:
+        with open(f"{REPO_ROOT}/solar_monitor/scanner.py") as f:
             return f.read()
 
     def test_or_pattern_import_attempted(self):
