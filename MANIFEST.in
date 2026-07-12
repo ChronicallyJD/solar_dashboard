@@ -1,0 +1,4 @@
+include LICENSE README.md MANUAL.md GUIDE.md CONFIG.md CHANGELOG.md
+recursive-include solar_monitor/vendor *.js
+recursive-include tests *.py
+include tests/README.md

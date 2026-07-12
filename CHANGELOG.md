@@ -2,6 +2,49 @@
 
 Notable changes, newest first.
 
+## 2026-07-12: Release 1.1 "Deep Cycle"
+
+Security hardening, a full test pass, and an offline-capable dashboard.
+
+### Security
+- Dashboard HTML now escapes all dynamic values (device names, addresses,
+  error strings, state labels) and the embedded history JSON, closing a
+  stored XSS path via crafted device names.
+- The auto-generated TLS certificate is now a leaf certificate
+  (`CA:FALSE`, key usage `digitalSignature`/`keyEncipherment`, EKU
+  `serverAuth`) instead of a 10-year CA certificate. If you added the old
+  `server.crt` to a trust store, remove it and re-trust the new one.
+- `server.key` is created with mode 0600 from the start.
+- HTTP requests get one 15s deadline and a 100-header cap, preventing
+  slow-header connection holding.
+- `HistoryDB.query()` validates `fields` and `order` identifiers itself
+  instead of relying on callers.
+- State file writes use a unique `mkstemp` temp file in the target
+  directory: concurrent workers cannot clobber each other and planted
+  symlinks cannot redirect the write.
+- The MCP server compares `api_key` with `hmac.compare_digest`.
+- Example configs and test fixtures no longer contain real Victron
+  advertisement keys or device MACs.
+
+### Offline dashboard
+- Chart.js 4.5.1 is vendored at `solar_monitor/vendor/` and inlined into
+  the generated HTML; the Google Fonts import was dropped. The dashboard
+  now renders fully offline with no CDN references.
+
+### Tests
+- Suite grew from 783 to 1107 tests; coverage 85% to 96%. New coverage:
+  JBD protocol parsing (100%), Victron advertisement parsers (99%),
+  supervisor main (99%), worker entry points, history CLI utilities, and
+  security regression tests for every fix above.
+- Tests no longer hardcode absolute paths and run from any checkout.
+
+### Documentation
+- All five docs rewritten: terse register, no duplicated content
+  (MANUAL.md alone shrank 622 lines), dated changelog, corrected install
+  instructions, CONFIG.md is the single home for the annotated config.
+- Added `.gitignore`; the repo no longer tracks bytecode, runtime output,
+  or TLS material.
+
 ## 2026-06-02: VE.Bus record type read from wrong nibble
 
 A VE.Bus Smart Dongle broadcasting record type `0x0C` (newer firmware) was

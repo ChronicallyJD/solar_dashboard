@@ -5,7 +5,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="solar-monitor",
-    version="1.0.0",
+    version="1.1.0",
     description="BLE-based solar system monitor for JBD/Vatrer BMS and Victron devices",
     packages=find_packages(),
     package_data={"solar_monitor": ["vendor/chart.umd.min.js"]},
